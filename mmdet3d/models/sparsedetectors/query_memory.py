@@ -947,9 +947,19 @@ class CausalQueryMemoryAttention(nn.Module):
 
 
 class ConfidenceGatedFusion(nn.Module):
-    """Confidence-gated residual query fusion with exact identity fallback."""
+    """Confidence-gated residual query fusion with LayerScale.
 
-    def __init__(self, embed_dims=256, ffn_dims=512, gate_bias=-4.0):
+    ``alpha_init=0`` is retained as an explicit strict-identity option for
+    legacy STAC-QM modes.  Phase 3 uses a small nonzero alpha so the first
+    backward pass reaches attention, gate, and projection parameters.
+    """
+
+    def __init__(self,
+                 embed_dims=256,
+                 ffn_dims=512,
+                 gate_bias=-4.0,
+                 alpha_init=0.0,
+                 out_proj_gain=0.0):
         super().__init__()
         self.norm_q = nn.LayerNorm(embed_dims)
         self.norm_h = nn.LayerNorm(embed_dims)
@@ -960,9 +970,19 @@ class ConfidenceGatedFusion(nn.Module):
             nn.Linear(ffn_dims, embed_dims),
         )
         self.out_proj = nn.Linear(embed_dims, embed_dims)
-        nn.init.zeros_(self.out_proj.weight)
+        if float(out_proj_gain) == 0.0:
+            nn.init.zeros_(self.out_proj.weight)
+        else:
+            nn.init.xavier_uniform_(self.out_proj.weight,
+                                    gain=float(out_proj_gain))
         nn.init.zeros_(self.out_proj.bias)
         nn.init.constant_(self.gate_mlp[-1].bias, float(gate_bias))
+        self.alpha = nn.Parameter(torch.tensor(float(alpha_init)))
+
+    @property
+    def memory_norm(self):
+        """Named alias used by the Phase 3 fusion specification."""
+        return self.norm_h
 
     def forward(self,
                 query_feat,
@@ -979,7 +999,7 @@ class ConfidenceGatedFusion(nn.Module):
         h = memory_output.to(query_feat.device)
         gate_input = torch.cat([
             self.norm_q(query_feat.float()),
-            self.norm_h(h.float()),
+            self.memory_norm(h.float()),
             self.norm_delta((query_feat - h).float()),
             current_confidence.to(query_feat.device).float(),
             support_confidence.to(query_feat.device).float(),
@@ -987,12 +1007,24 @@ class ConfidenceGatedFusion(nn.Module):
         gate = torch.sigmoid(self.gate_mlp(gate_input))
         residual = self.out_proj(h.to(self.out_proj.weight.dtype)).to(orig_dtype)
         applied_residual = (
-            has.unsqueeze(-1).to(orig_dtype) * gate.to(orig_dtype) * residual)
+            has.unsqueeze(-1).to(orig_dtype) * self.alpha.to(orig_dtype) *
+            gate.to(orig_dtype) * residual)
         fused = query_feat + applied_residual
+        has_float = has.float()
+        candidate_count = has_float.sum().clamp_min(1.0)
+        conditional_gate = (
+            (gate.detach().float().mean(dim=-1) * has_float).sum() /
+            candidate_count)
+        residual_ratio = applied_residual.detach().float().norm(dim=-1) / (
+            query_feat.detach().float().norm(dim=-1) + 1e-6)
         diagnostics = dict(
             avg_gate=(
                 gate.detach() * has.unsqueeze(-1).float()).mean(dim=-1),
-            residual_norm=applied_residual.detach().float().norm(dim=-1))
+            conditional_gate=conditional_gate.detach(),
+            candidate_ratio=has_float.mean().detach(),
+            residual_norm=applied_residual.detach().float().norm(dim=-1),
+            residual_ratio=residual_ratio.detach(),
+            fusion_alpha=self.alpha.detach().clone())
         return fused, diagnostics
 
 
@@ -1014,6 +1046,9 @@ class STACQueryMemory(nn.Module):
                  motion_compensation=True,
                  max_velocity=20.0,
                  pc_range=None,
+                 fusion_gate_bias=-4.0,
+                 fusion_alpha_init=0.0,
+                 fusion_out_proj_gain=0.0,
                  **kwargs):
         super().__init__()
         del kwargs
@@ -1036,7 +1071,11 @@ class STACQueryMemory(nn.Module):
             max_age=max_age,
             pc_range=pc_range)
         self.fusion = ConfidenceGatedFusion(
-            embed_dims=embed_dims, ffn_dims=embed_dims * 2)
+            embed_dims=embed_dims,
+            ffn_dims=embed_dims * 2,
+            gate_bias=fusion_gate_bias,
+            alpha_init=fusion_alpha_init,
+            out_proj_gain=fusion_out_proj_gain)
         # zero-initialized -> exact ego-only alignment until trained
         self.motion_compensator = QueryMotionCompensator(
             embed_dims=embed_dims, max_velocity=max_velocity, max_age=max_age)

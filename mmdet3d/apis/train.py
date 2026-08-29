@@ -34,6 +34,32 @@ def _select_detector_eval_hook(model, distributed):
     return MMDET_DistEvalHook if distributed else MMDET_EvalHook
 
 
+def _select_detector_optimizer_target(model, optimizer_cfg):
+    """Select and validate the optimizer target for Memory tuning modes."""
+    model_for_optimizer = model.module if hasattr(model, 'module') else model
+    if getattr(model_for_optimizer, 'memory_finetune_mode', False):
+        query_memory = getattr(model_for_optimizer, 'query_memory', None)
+        if query_memory is None:
+            raise RuntimeError(
+                'memory_finetune_mode has no query_memory optimizer target')
+        return model_for_optimizer, query_memory
+
+    joint_mode = getattr(
+        model_for_optimizer, 'memory_joint_finetune_mode', False)
+    phase2_mode = getattr(
+        model_for_optimizer, 'memory_phase2_finetune_mode', False)
+    if joint_mode or phase2_mode:
+        mode_name = (
+            'memory_phase2_finetune_mode'
+            if phase2_mode else 'memory_joint_finetune_mode')
+        constructor = optimizer_cfg.get('constructor', None)
+        if constructor != 'TrainableOnlyOptimizerConstructor':
+            raise RuntimeError(
+                f'{mode_name} requires optimizer.constructor='
+                '"TrainableOnlyOptimizerConstructor"')
+    return model_for_optimizer, model
+
+
 def init_random_seed(seed=None, device='cuda'):
     """Initialize random seed.
 
@@ -243,22 +269,10 @@ def train_detector(model,
             model.cuda(cfg.gpu_ids[0]), device_ids=cfg.gpu_ids)
 
     # MMCV's default optimizer constructor includes frozen parameters, so
-    # explicit Memory-only tuning must target query_memory itself.
-    model_for_optimizer = model.module if hasattr(model, 'module') else model
-    if getattr(model_for_optimizer, 'memory_finetune_mode', False):
-        if getattr(model_for_optimizer, 'query_memory', None) is None:
-            raise RuntimeError(
-                'memory_finetune_mode has no query_memory optimizer target')
-        optimizer_target = model_for_optimizer.query_memory
-    elif getattr(model_for_optimizer, 'memory_joint_finetune_mode', False):
-        constructor = cfg.optimizer.get('constructor', None)
-        if constructor != 'TrainableOnlyOptimizerConstructor':
-            raise RuntimeError(
-                'memory_joint_finetune_mode requires optimizer.constructor='
-                '"TrainableOnlyOptimizerConstructor"')
-        optimizer_target = model
-    else:
-        optimizer_target = model
+    # Memory-only targets query_memory directly while broader tuning modes
+    # require the trainable-only constructor.
+    model_for_optimizer, optimizer_target = \
+        _select_detector_optimizer_target(model, cfg.optimizer)
     optimizer = build_optimizer(optimizer_target, cfg.optimizer)
 
     if 'runner' not in cfg:

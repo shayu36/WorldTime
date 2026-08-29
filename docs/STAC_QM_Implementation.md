@@ -371,15 +371,111 @@ CUDA_VISIBLE_DEVICES=0,1 /data/jxy/projects/env/bin/torchrun \
 
 Generated checkpoints, logs, predictions, `output_data.pkl`, and cache artifacts must remain uncommitted.
 
+## Phase2 Occupancy-Head Fine-Tuning
+
+Phase2 adds `memory_phase2_finetune_mode=True`. The mode is mutually
+exclusive with Memory-only and joint tuning and requires enabled cache-backed
+STAC-QM plus `freeze_base_model=True`.
+
+Trainable from iteration one:
+
+```text
+query_memory.*       lr=5e-5
+position_encoder.*   lr=1e-5
+reg_branch.*         lr=1e-5
+vel_branch.*         lr=1e-5
+cls_branch.*         lr=1e-5
+ego_cross_attn.*     lr=5e-6
+pts_bbox_head.*      lr=5e-6
+```
+
+Frozen and held in eval mode:
+
+```text
+img_backbone.*
+img_neck.*
+plan_head.*
+points_scale_branch.*
+traj_head.*
+```
+
+The image backbone and neck remain frozen because the schema-v2 history
+caches were generated in the epoch-56 feature space. Allowing the current
+frame feature extractor to drift while cached history Queries remain fixed
+would break their alignment. Phase2 instead adapts the final occupancy query
+refinement and semantic output path at a conservative LR. TASS
+`num_stamps_all`, `ind_stamps_all`, and RAP causal masks remain immutable, and
+the 7-read/1040-fused-query invariant is unchanged.
+
+Configs:
+
+```text
+configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-phase2.py
+configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-phase2-smoke.py
+```
+
+The formal config starts cleanly from `ckpts/epoch_56.pth`, trains for 12
+epochs, and validates every epoch. It uses
+`TrainableOnlyOptimizerConstructor`; the phase2 smoke hook additionally
+requires a nonzero aggregate gradient for `pts_bbox_head.*` while preserving
+the joint connectivity, frozen-state, TASS, and 7/1040 checks.
+
+Run the user-operated 200-iteration smoke first:
+
+```bash
+cd /data/jxy/projects
+CUDA_VISIBLE_DEVICES=0 /data/jxy/projects/env/bin/python tools/train.py \
+  configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-phase2-smoke.py \
+  --work-dir work_dirs/sparseworld-traj-memory-phase2-smoke \
+  --gpu-id 0 --deterministic
+```
+
+Only after the hook completes successfully, start formal training:
+
+```bash
+cd /data/jxy/projects
+mkdir -p work_dirs/sparseworld-traj-memory-phase2
+set -o pipefail
+CUDA_VISIBLE_DEVICES=0,1 /data/jxy/projects/env/bin/torchrun \
+  --nproc_per_node=2 --master_port=29520 \
+  tools/train.py \
+  configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-phase2.py \
+  --work-dir work_dirs/sparseworld-traj-memory-phase2 \
+  --launcher pytorch --validate --deterministic \
+  2>&1 | tee work_dirs/sparseworld-traj-memory-phase2/train.log
+```
+
+Phase2 effectiveness is measured against the 4,219-sample epoch-56 baseline.
+Any epoch with future mean mIoU above `13.2233` is an improvement; 0s mIoU
+must also be monitored for regression. If no epoch improves, stop and discuss
+architecture-level changes instead of expanding the trainable boundary.
+
+| Checkpoint | mIoU [0s, 1s, 2s, 3s] | Future mean | Delta vs 13.2233 | Planning | Status |
+| --- | --- | ---: | ---: | --- | --- |
+| epoch-56 baseline | [18.20, 14.96, 13.18, 11.53] | 13.2233 | 0.0000 | recorded above | complete |
+| phase2 smoke | not evaluated | not evaluated | not applicable | not applicable | 200/200 hook passed |
+| phase2 best epoch | pending | pending | pending | pending | user-run pending |
+
 ## Completed Verification
 
 ### Static and Synthetic
 
 ```text
-47 passed, 19 warnings
+59 passed, 19 warnings
 ```
 
-The additional regression coverage proves that a Memory-only batch with no valid historical slot remains an exact numerical identity but still supports backward with explicit zero gradients. It also proves that SparseWorld dictionary outputs are parsed without generic sequence indexing, distributed rank shards are restored in dataset order and trimmed after sampler padding, SparseWorld selects the custom evaluation hooks, and ordinary detectors retain MMDetection's generic hooks. Modified Python files compile, `git diff --check` passes, all six STAC-QM configs load, strict train/val/test routing is active, and the training and evaluation hooks are registered.
+The regression coverage proves that a Memory-only batch with no valid
+historical slot remains an exact numerical identity but still supports
+backward with explicit zero gradients. It also covers phase2's exact trainable
+set and LR tiers, three-mode mutual exclusion, required cache-backed safety
+settings, module train/eval states, immutable TASS state, 7/1040 behavior,
+strict cache routing, trainable-only optimizer guard, and smoke-hook
+registration. SparseWorld dictionary outputs are parsed without generic
+sequence indexing, distributed rank shards are restored in dataset order and
+trimmed after sampler padding, SparseWorld selects the custom evaluation
+hooks, and ordinary detectors retain MMDetection's generic hooks. Modified
+Python files compile, `git diff --check` passes, all eight STAC-QM configs load,
+and the training and evaluation hooks are registered.
 
 ### Real Cache and GPU Acceptance
 

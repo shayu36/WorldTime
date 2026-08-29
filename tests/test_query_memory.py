@@ -144,6 +144,57 @@ def test_stac_all_invalid_and_empty_memory_are_exact_identity():
     assert torch.equal(empty_fused, query_feat)
 
 
+def test_layerscale_fusion_has_live_first_step_gradients():
+    torch.manual_seed(7)
+    stac = qm.STACQueryMemory(
+        enabled=True, embed_dims=8, num_heads=2, spatial_radius=100.0,
+        topk=4, max_age=8.0, dropout=0.0,
+        fusion_gate_bias=-1.0, fusion_alpha_init=1e-3,
+        fusion_out_proj_gain=0.1)
+    query_feat = torch.randn(1, 2, 8)
+    memory = make_memory(B=1, K=1, M=2, C=8, R=2)
+    fused, diagnostics = stac(
+        query_feat, torch.zeros(1, 2, 2, 3), torch.ones(1, 2),
+        memory=memory, target_ego2global=torch.eye(4).unsqueeze(0))
+    fused.square().mean().backward()
+
+    for prefix in (
+            'attention.q_proj.', 'attention.k_proj.', 'attention.v_proj.',
+            'fusion.out_proj.', 'fusion.gate_mlp.'):
+        grads = [param.grad for name, param in stac.named_parameters()
+                 if name.startswith(prefix)]
+        assert grads and any(
+            grad is not None and torch.count_nonzero(grad).item() > 0
+            for grad in grads)
+    assert stac.fusion.alpha.grad is not None
+    assert torch.count_nonzero(stac.fusion.alpha.grad).item() > 0
+    assert float(diagnostics['conditional_gate']) > 0.0
+    assert float(diagnostics['candidate_ratio']) == 1.0
+
+
+def test_zero_layerscale_is_strict_identity_but_alpha_is_the_only_path():
+    stac = qm.STACQueryMemory(
+        enabled=True, embed_dims=8, num_heads=2, spatial_radius=100.0,
+        topk=4, max_age=8.0, dropout=0.0,
+        fusion_gate_bias=-1.0, fusion_alpha_init=0.0,
+        fusion_out_proj_gain=0.1)
+    query_feat = torch.randn(1, 1, 8)
+    memory = make_memory(B=1, K=1, M=1, C=8, R=2)
+    fused, _ = stac(
+        query_feat, torch.zeros(1, 1, 2, 3), torch.ones(1, 1),
+        memory=memory, target_ego2global=torch.eye(4).unsqueeze(0))
+    assert torch.equal(fused, query_feat)
+    fused.square().mean().backward()
+    assert stac.fusion.alpha.grad is not None
+    for prefix in ('attention.q_proj.', 'attention.k_proj.',
+                   'attention.v_proj.', 'fusion.gate_mlp.',
+                   'fusion.out_proj.'):
+        grads = [param.grad for name, param in stac.named_parameters()
+                 if name.startswith(prefix)]
+        assert all(grad is None or torch.count_nonzero(grad).item() == 0
+                   for grad in grads)
+
+
 def test_enabled_false_is_baseline_identity_without_memory_requirements():
     stac = qm.STACQueryMemory(enabled=False, embed_dims=8, num_heads=2)
     query_feat = torch.randn(1, 2, 8)
