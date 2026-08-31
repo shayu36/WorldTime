@@ -454,7 +454,12 @@ architecture-level changes instead of expanding the trainable boundary.
 | --- | --- | ---: | ---: | --- | --- |
 | epoch-56 baseline | [18.20, 14.96, 13.18, 11.53] | 13.2233 | 0.0000 | recorded above | complete |
 | phase2 smoke | not evaluated | not evaluated | not applicable | not applicable | 200/200 hook passed |
-| phase2 best epoch | pending | pending | pending | pending | user-run pending |
+| phase2 epoch 4 | [18.20, 14.96, 13.18, 11.53] | 13.2233 | 0.0000 | no improvement | complete; tied at printed precision |
+| phase2 epoch 12 | [18.20, 14.92, 13.14, 11.49] | 13.1833 | -0.0400 | no improvement | complete |
+
+The detailed current Phase 2/3/4 and ablation report is
+[`docs/EXPERIMENT_DEBUG_REPORT.md`](EXPERIMENT_DEBUG_REPORT.md). The table
+above is retained for runbook continuity; it is no longer a pending result.
 
 ## Completed Verification
 

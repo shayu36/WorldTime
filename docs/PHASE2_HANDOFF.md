@@ -2,7 +2,7 @@
 
 > 生成时间: 2026-08-19
 > 目的: 在另一 AI 端（GPT Codex）继续第二阶段训练。本文是唯一需要完整阅读的入口文档。
-> 完整对话记录（可选查阅，勿全文粘贴给模型）: `docs/conversation_transcript.md`
+> 完整对话记录（可选查阅，勿全文粘贴给模型）: `docs/archive/conversation_transcript.md`
 > 权威项目文档: `docs/STAC_QM_Modeling_Repair.md`、`docs/STAC_QM_Implementation.md`
 
 ---
@@ -31,7 +31,7 @@ GPU:         2 × 24 GB（CUDA_VISIBLE_DEVICES=0,1）
 
 当前 git 状态（交接时）：
 - HEAD = `76b3c99 Add STAC-QM joint training configs and SparseWorld evaluation pipeline`
-- 工作树：`docs/conversation_transcript.md`（未跟踪）、`docs/install.md`（已删除，未提交，与本任务无关，勿动勿提交）
+- 工作树状态是历史交接快照；完整对话记录现归档于 `docs/archive/conversation_transcript.md`。
 
 硬性约束（用户明确要求，必须遵守）：
 1. **所有长时间命令（训练/评估/缓存生成）由用户自己运行，AI 只给命令，不得后台执行。**

@@ -1,11 +1,13 @@
 # STAC-QM Codex API Continuation Handoff
 
-Last updated: 2026-08-21 UTC
+Last updated: 2026-08-31 UTC (historical handoff; current results consolidated in `docs/EXPERIMENT_DEBUG_REPORT.md`)
 
-This document is the self-contained entry point for the next Codex API session.
-It summarizes the repository state, user constraints, completed implementation,
-all relevant experiments, the current failure diagnosis, and the proposed next
-architecture. Do not treat the proposed Phase 3 design as already implemented.
+This document is a historical self-contained handoff for a prior Codex API
+session. It summarizes the repository state, user constraints, completed
+implementation, and the Phase 3 design as it was proposed at that time. For
+the authoritative current Phase 2/3/4 and ablation results, read
+`docs/EXPERIMENT_DEBUG_REPORT.md`. Do not use the old proposal sections as a
+status report.
 
 ## 1. Current Decision
 
@@ -92,7 +94,7 @@ These constraints remain active unless the user explicitly changes them.
 
 ## 4. Dirty Worktree: Preserve User-Owned State
 
-Current `git status --short` snapshot:
+Current `git status --short` snapshot (historical, captured at the 2026-08-21 handoff; not the current worktree):
 
 ```text
  D DIAGNOSTIC_REPORT.md
@@ -111,14 +113,14 @@ Current `git status --short` snapshot:
 ?? configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-phase2-smoke.py
 ?? configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-phase2.py
 ?? docs/PHASE2_HANDOFF.md
-?? docs/conversation_transcript.md
+?? docs/archive/conversation_transcript.md
 ?? docs/STAC_QM_CODEX_API_HANDOFF.md
 ```
 
-The deletions and unrelated untracked files are not authorization to restore,
-delete, or commit them. In particular, `docs/install.md` is intentionally
-deleted in the current worktree and `docs/conversation_transcript.md` is an
-untracked user file. Do not touch either. Treat every unrelated status entry as
+The deletions and unrelated untracked files in this historical snapshot were
+not authorization to restore, delete, or commit them. `docs/install.md` remains
+outside this organization task. The conversation transcript is now archived at
+`docs/archive/conversation_transcript.md`. Treat unrelated status entries as
 user-owned unless the user explicitly says otherwise.
 
 ## 5. Completed STAC-QM Foundation
@@ -451,9 +453,11 @@ This preserves the baseline exactly, but it creates a difficult optimization
 startup. The smoke result is consistent with the model remaining close to an
 identity mapping.
 
-## 9. Proposed Phase 3: Memory-Conditioned Occupancy Refinement
+## 9. Historical Phase 3 Design Proposal
 
-Status: design discussion only. No Phase 3 code or config has been implemented.
+Status: this section records the design discussion before Phase 3 was
+implemented. The actual implementation and negative/diagnostic results are in
+`docs/EXPERIMENT_DEBUG_REPORT.md`.
 
 ### 9.1 Recommended first architecture
 
@@ -712,6 +716,8 @@ Do not do the following as the immediate next step:
 
 ```text
 Primary handoffs:
+  docs/EXPERIMENT_DEBUG_REPORT.md           current authoritative results/debug
+  docs/README.md                            current documentation index
   docs/STAC_QM_CODEX_API_HANDOFF.md       this document
   docs/PHASE2_HANDOFF.md                  detailed Phase 1/2 runbook and results
   docs/STAC_QM_Implementation.md          implementation and command history
