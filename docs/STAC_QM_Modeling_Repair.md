@@ -1,100 +1,63 @@
-# STAC-QM Modeling Repair and Memory-Only Acceptance
+# STAC-QM 建模修复与训练安全边界
 
-This document records the STAC-QM modeling repair and the follow-up Memory-only training-safety implementation completed in 2026-08.
+本文只记录建模修复、cache schema 和训练安全边界。实验数值、debug 结论和当前未解决问题统一见 [EXPERIMENT_DEBUG_REPORT.md](EXPERIMENT_DEBUG_REPORT.md)。命令入口见 [STAC_QM_Implementation.md](STAC_QM_Implementation.md)。
 
-## Status
+## 修复目标
 
-Completed in code:
+STAC-QM 的目标是在 SparseWorld trajectory forecasting 中引入 causal query memory，同时保证：
 
-- the six STAC-QM modeling repairs;
-- complete schema-v2 cache fields and strict validation;
-- runtime synthetic proof of 7 Memory reads and 1040 fused queries;
-- explicit `memory_finetune_mode=True` behavior;
-- frozen TASS temporal assignment after loading the base checkpoint;
-- query-memory-only optimizer construction and guarded smoke-training hooks;
-- split-specific strict train/val cache routing;
-- cache-audit and C0/C1 identity tools;
-- synthetic CPU tests and configuration compilation.
+- Memory 只读取真实过去帧；
+- cache 记录的语义、位置、可靠性和时间信息可审计；
+- 新增 Memory 分支可训练；
+- baseline 复现路径不因 Memory 训练发生隐式漂移；
+- 空历史或无候选 batch 退化为数值恒等。
 
-Completed on real data/GPU:
+## 六项建模修复
 
-- full train and val schema-v2 cache generation;
-- cache-wide train and val audits with zero failures;
-- real-data zero-initialization C0/C1 identity;
-- 200-iteration guarded GPU smoke training;
-- trained Memory ON/OFF behavior verification.
+### 1. 每个 query 只读取真实历史一次
 
-Completed after acceptance:
+Observation queries 在 SCF 前读取一次 Memory；每个 scheduled future query group 在被引入时读取一次 Memory。已经 active 的 query 不重复读取。
 
-- 12-epoch two-GPU Memory-only training with global batch size 4;
-- epoch-12 trained Memory ON/OFF behavior verification.
-
-Completed effectiveness checks:
-
-- full 4,219-sample nuScenes validation for Memory ON and OFF;
-- epoch-5/8/12 occupancy comparisons;
-- planning L2 and collision comparison.
-
-The Memory-only path is functionally active but does not improve aggregate IoU/mIoU. A separate clean-start joint-finetune implementation is prepared to adapt STAC-QM together with future occupancy modules. Generated `.pt` caches, checkpoints, datasets, prediction files, output PKLs, and large logs must not be committed.
-
-## Six Modeling Repairs
-
-### 1. One Real-History Read Per Query
-
-Observation queries read Memory once before SCF:
+默认调度：
 
 ```text
-720 observation queries
-  -> STAC-QM(memory, future_offset=0.0)
-  -> SCF recursion
+observation queries: 720
+future scheduled groups: [60, 60, 60, 60, 40, 40]
+future offsets: [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
 ```
 
-Each scheduled future-query group reads Memory once when introduced:
+旧 STAC-QM integration 的默认期望是 `7` 次 Memory calls 和 `1040` 个 fused queries。
 
-```text
-[60, 60, 60, 60, 40, 40]
-future_offset = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
-```
+### 2. Future-aware effective age
 
-Already-active queries are never re-read. The default schedule therefore has:
-
-```text
-7 Memory calls
-720 + 60 + 60 + 60 + 60 + 40 + 40 = 1040 fused queries
-```
-
-`tests/test_query_memory_integration.py` exercises the actual `SparseWorld4DTraj.forward_backbone()` control flow with lightweight CPU fakes and asserts those exact calls and offsets.
-
-### 2. Future-Aware Effective Age
-
-Caches retain immutable base timestamps/ages:
+cache 中保留历史帧相对当前帧的基础时间差：
 
 ```text
 base_age = current_timestamp - history_timestamp
 ```
 
-At each read:
+future step 读取 Memory 时使用：
 
 ```text
 effective_age = base_age + future_offset
 ```
 
-Causal filtering, maximum-age filtering, temporal attention penalty, motion compensation, and diagnostics use `effective_age`. Cached timestamps are never modified.
+causal filtering、max-age filtering、temporal attention penalty、motion compensation 和 diagnostics 均使用 `effective_age`。缓存中的原始 timestamp 不被改写。
 
-### 3. Zero-Initialized Motion Compensation
+### 3. 零初始化运动补偿
 
-`QueryMotionCompensator` predicts a bounded per-memory-query velocity:
+`QueryMotionCompensator` 根据 memory feature 和 time feature 预测有界速度：
 
 ```text
 velocity = v_max * tanh(MLP([LN(memory_feature), time_features]))
 aligned_points = ego_aligned_points + effective_age * velocity
 ```
 
-The final motion MLP layer is initialized to zero, so initial behavior is exactly ego-pose alignment only.
+最后一层初始化为零，使初始行为等价于仅做 ego-pose alignment。
 
-### 4. Per-Query Semantic Reliability
+### 4. Per-query semantic reliability
 
-Schema v2 stores:
+schema-v2 cache 为每个 selected query 保存：
 
 ```text
 query_semantic_distribution [M, C_sem]
@@ -104,35 +67,22 @@ query_entropy               [M]
 query_reliability           [M]
 ```
 
-Reliability is derived from top-1 probability, top-1/top-2 margin, and normalized entropy:
+reliability 来自 top-1 probability、top-1/top-2 margin 和 normalized entropy 的组合，并 clamp 到 `[0, 1]`。schema-v1 仍可 fallback：
 
 ```text
-query_reliability = mean(top1, margin, 1 - H(p) / log(C))
-```
-
-The result is clamped to `[0, 1]`. `query_conf` remains for schema-v1 compatibility:
-
-```text
-schema v1 fallback:
 query_reliability = query_conf
 query_label = -1
 ```
 
-Schema-v2 validation checks exact shapes, finite values, valid ranges, and semantic-distribution row sums.
+formal Memory 实验应使用 schema-v2 cache。
 
-### 5. Shared Deterministic Diversity Selection
+### 5. 共享确定性 diversity selector
 
-One `select_diverse_memory_queries(...)` implementation is used by:
+cache precompute、cache loading 和 online memory bank 共享同一个 `select_diverse_memory_queries(...)`。选择逻辑按 reliability 稳定排序，优先覆盖不同类别和空间 cell，再按容量补齐。
 
-- cache precompute;
-- cache loading;
-- the online memory bank.
+### 6. target-age history selection
 
-The selector filters invalid/low-reliability rows, sorts stably by reliability, favors novel classes and spatial cells, and then fills remaining capacity subject to class and cell caps. Schema-v1 caches degrade to reliability plus spatial diversity because their label is unknown (`-1`).
-
-### 6. Target-Age History Selection
-
-The default repaired configuration uses:
+默认 repaired config 使用：
 
 ```python
 history_selection_mode = 'target_age'
@@ -140,194 +90,141 @@ history_target_ages = [2.5, 3.5, 4.5]
 history_age_tolerance = 0.35
 ```
 
-History candidates must be strictly past and from the same scene. Each target slot gets at most one frame, and one frame cannot fill multiple slots. Frames outside the dataset split's cache-generatable index space are excluded so strict cache loading does not request records the precompute dataloader cannot produce. Legacy `recent` mode remains supported.
+历史帧必须满足：
 
-## Memory-Only Training Safety
+- strictly past；
+- same scene；
+- 每个 target slot 最多一个 frame；
+- 同一 frame 不重复填多个 slot；
+- 不能选择 cache 无法生成的 split 边界样本。
 
-### Explicit Mode
+## Schema-v2 cache 校验
 
-Formal tuning uses:
+每条记录的关键字段：
+
+```text
+query_feat
+query_points_metric
+query_conf
+query_semantic_distribution
+query_label
+query_margin
+query_entropy
+query_reliability
+valid_mask
+ego2global
+timestamp
+frame_idx
+scene_id
+sample_idx
+pc_range
+embed_dims
+num_points
+num_classes
+source_config
+source_checkpoint
+schema_version
+```
+
+loader 必须检查：
+
+- 必要字段存在；
+- feature、points、label、semantic distribution、reliability、time 字段 shape 一致；
+- semantic distribution 类别维度合法；
+- 数值 finite；
+- probability 非负且行和有效；
+- reliability/margin 范围合法；
+- scene 和时间因果关系合法。
+
+缺字段或 shape 错误必须显式报错，不能静默 fallback。schema-v1 fallback 只用于兼容旧记录，不作为 formal 主路径。
+
+## 训练安全边界
+
+### Memory-only 旧路径
+
+旧 Memory-only mode 使用：
 
 ```python
 query_memory_cfg = dict(
     enabled=True,
     source='cache',
     memory_finetune_mode=True,
-    freeze_base_model=True)
+    freeze_base_model=True,
+)
 ```
 
-The mode rejects disabled Memory, online-memory training, or an unfrozen base model. Only `query_memory.*` parameters have `requires_grad=True`.
+只允许 `query_memory.*` 参数训练。base model、OPUS head、TASS assignment 和 frozen buffers 必须保持不变。
 
-### Optimizer Scope
+### Joint 旧路径
 
-MMCV's default optimizer constructor includes frozen parameters. Therefore `mmdet3d/apis/train.py` builds the optimizer directly from `model.query_memory` in Memory-only mode.
+joint finetune 曾用于验证扩大训练边界是否能让 Memory 信号进入 future head。它属于历史实验入口，不是当前主线。
 
-After checkpoint loading, `validate_query_memory_training_setup(...)` verifies:
+### Future Memory Adapter 当前路径
 
-- every trainable parameter is under `query_memory.*`;
-- every optimizer parameter belongs to `query_memory.*`;
-- every trainable query-memory parameter is present in the optimizer;
-- the trainable parameter names and scalar count are logged.
+Future Adapter mode 使用独立模块：
 
-### Frozen TASS Assignment
+```python
+future_memory_adapter_enabled=True
+future_memory_adapter_finetune_mode=True
+future_memory_target_horizons=[1.0, 2.0, 3.0]
+```
 
-After `ckpts/epoch_56.pth` is loaded, Memory-only setup runs once:
+安全边界：
 
-1. normalize restored `num_stamps_all`;
-2. derive `ind_stamps_all` once;
-3. rebuild RAP masks once;
-4. clone `num_stamps_all`, `ind_stamps_all`, and all RAP masks;
-5. set model/head `pretrain=False`;
-6. set `pts_bbox_head.freeze_tass_state=True`.
+- baseline image backbone/neck 冻结；
+- 原 OPUS/SparseWorld head 冻结；
+- 原始 query encoding、future recurrence、classification/regression branches 冻结；
+- 只训练 `future_memory_adapter.*`；
+- Memory corrected logits、points、features 不写回 baseline future recurrence；
+- 0s 和非目标 future step 不走 Future Adapter。
 
-The OPUS loss no longer accumulates into `num_stamps_all` while this guard is active. `set_epoch()` only records the epoch and asserts the frozen state. Every Memory-only iteration uses all six future horizons from the beginning.
+## Future Adapter 建模不变量
 
-### Runtime Train/Eval Modes
-
-The root model remains `training=True`, allowing MMDetection to execute `forward_train()` and compute losses. During Memory-only training:
-
-- `query_memory` remains in training mode;
-- every base child module stays in evaluation mode;
-- frozen BN statistics and dropout behavior remain unchanged.
-
-Calling `eval()` still puts the whole model into evaluation mode.
-
-### Empty-History Batch Safety
-
-Samples near a scene boundary may have no valid frame at any configured target age. Because the base model is frozen, returning the untouched base query directly would produce a loss with no `grad_fn` and crash both smoke and formal optimizer hooks. The identity path therefore adds a numerically zero autograd anchor to every trainable Query Memory parameter:
-
-- forward values remain exactly unchanged;
-- backward is valid;
-- all Query Memory gradients for that batch are explicitly zero;
-- zero gradients do not satisfy the smoke connectivity gate;
-- later batches with real Memory candidates must still provide the required nonzero connectivity.
-
-### Smoke Optimizer Guard
-
-`QueryMemoryConnectivityOptimizerHook` performs the normal backward/clip/step sequence and also:
-
-- rejects nonzero base-model gradients;
-- checks frozen TASS state every iteration;
-- logs gradient norms for fusion output/gate, attention Q/K/V, and the motion final layer;
-- requires fusion and Q/K/V connectivity after warm-up;
-- reports, but does not fabricate, motion-gradient connectivity;
-- asserts 7 reads and 1040 fused queries per forward;
-- logs valid slots, candidate counts, gates, residuals, effective age, and motion residuals;
-- hashes all base parameters and buffers before/after the run to detect any base or BN-state change.
-
-The hook is enabled only by the dedicated smoke config.
-
-## Strict Split Cache Routing
-
-Both repaired STAC-QM configs route caches as follows:
+当前 Future Adapter 修复旧 Phase3/Phase4 拓扑中的跨时刻 logits 累加问题。每个目标 horizon 独立计算：
 
 ```text
-train -> data/query_memory/sparseworld_epoch56_schema2_train
-val   -> data/query_memory/sparseworld_epoch56_schema2_val
-test  -> data/query_memory/sparseworld_epoch56_schema2_val
+S_base(t) = ClsBranch(Q_base(t))
+S_final(t) = S_base(t) + G(t) * DeltaS_memory(t) + G(t) * DeltaO_memory(t)
+P_final(t) = SafeRefine(P_base(t), G(t) * DeltaP_memory(t))
 ```
 
-The shared dataset config no longer overrides the split root. Formal loaders and dataset metadata use `strict=True`, so selected missing histories fail instead of silently becoming empty Memory.
+禁止：
 
-Configs:
+- `S(t) = S_final(t-1) + ClsBranch(Q(t))`；
+- 把 1s corrected logits 传给 2s；
+- 把 2s corrected logits 传给 3s；
+- 用 Memory correction 改写下一步 baseline recurrence state。
 
-- `sparseworld-traj-finetune-stacqm.py`: repaired STAC-QM plumbing;
-- `sparseworld-traj-finetune-stacqm-val.py`: matching split-safe validation plumbing;
-- `sparseworld-traj-memory-only.py`: formal 12-epoch Memory-only run;
-- `sparseworld-traj-memory-only-smoke.py`: Memory-only connectivity gate;
-- `sparseworld-traj-memory-joint.py`: clean-start formal joint run;
-- `sparseworld-traj-memory-joint-smoke.py`: joint connectivity/frozen-state gate.
+目标 horizon 映射：
 
-The original baseline config `sparseworld-traj-finetune.py` is unchanged.
+| horizon | internal future step | output key |
+| ---: | ---: | --- |
+| 1s | 2 | `semantic_occ_2s` |
+| 2s | 4 | `semantic_occ_4s` |
+| 3s | 6 | `semantic_occ_6s` |
 
-## Verification Tools
+active query 数由实际 schedule 张量得到，默认验收为 `840 / 960 / 1040`。
 
-### Cache Audit
+## 初始化策略
 
-`tools/query_memory/audit_query_memory_cache.py` builds the actual configured dataset and reuses its target-age history selection plus loader validation. It reports:
+新增 Memory 路径需要同时满足可训练性和 baseline 等价：
 
-- split dataset/cache counts and current-sample coverage;
-- schema, source-checkpoint, and source-config distributions;
-- missing, corrupt, shape, scene, temporal, and noncausal failures;
-- target-age slot coverage;
-- reliability min/median/max;
-- class histogram and spatial-cell coverage.
+- q/k/v、memory projection、semantic projection 使用正常非零初始化；
+- gate bias 约为 `-1`；
+- semantic/occupancy/position residual head 最后一层权重和 bias 初始化为零；
+- 不使用 `1e-3` 级全局 alpha；
+- 无有效 Memory candidate 时 gate 强制为零，输出严格退化为 baseline。
 
-It exits nonzero when formal-cache failures are found.
+## 验收原则
 
-### C0/C1 Identity and Trained Difference
+代码级验收应覆盖：
 
-`tools/query_memory/check_query_memory_identity.py` runs a real validation sample twice with identical base state:
+- zero-init baseline identity；
+- no-candidate baseline fallback；
+- horizon embedding 在 attention query 前生效；
+- memory feature、semantic distribution、label、reliability、age、relative position 对候选分数或输出具有因果影响；
+- baseline 参数无梯度；
+- residual head 和上游 adapter 参数在合成 backward/微型 optimizer step 中可获得梯度；
+- cache schema/collate 字段不丢失。
 
-- C0: Memory disabled;
-- C1: cache Memory enabled.
-
-Zero-initialized mode requires `max_abs_diff <= 1e-6` for current logits/points, future logits/points, trajectory output, and final occupancy-evaluation inputs. It also requires valid Memory, candidates, 7 reads, 1040 fused queries, zero fusion projection, zero motion final layer, and zero applied residual.
-
-Trained mode requires current-frame identity while at least one future output differs, and requires a nonzero trained fusion projection/residual.
-
-## Real-Data Acceptance Results
-
-Using the configured nuScenes splits and `ckpts/epoch_56.pth`:
-
-- train cache: `19,730 / 19,730` schema-v2 records;
-- val cache: `4,219 / 4,219` schema-v2 records;
-- both complete audits reported `failure_count=0` with no missing, corrupt, orphan, noncausal, duplicate-history, scene, temporal, shape, schema, sample, or source-checkpoint failures;
-- target-age selected and loaded counts matched for every slot on both splits;
-- zero-initialization C0/C1 passed on val sample index 9 with three valid history slots, 7 reads, 1040 fused queries, zero fusion/motion residual, and exact `0.0` differences for all checked outputs;
-- the 200-iteration smoke completed with nonzero gradients for fusion output/gate, attention Q/K/V, and the motion final layer; its base parameter/buffer hashes and frozen TASS assertions passed;
-- trained ON/OFF verification retained exact current-frame identity while all six forecast horizons and trajectory output changed; observed maxima included `out_proj_abs_max=0.0034669`, `motion_last_abs_max=0.0030774`, and `residual_norm_max=0.0197589`.
-
-Formal 12-epoch Memory-only training subsequently completed after 59,196 iterations. It ended cleanly without NaN/Inf; all 679 base-model tensors remained bitwise identical to `ckpts/epoch_56.pth`; and the final optimizer contained only the 29 trainable Query Memory tensors. Epoch-12 trained ON/OFF verification preserved exact current-frame identity while changing all six future horizons and trajectory output, with 7 reads, 1040 fused queries, three valid history slots, `out_proj_abs_max=0.0962831`, `motion_last_abs_max=0.0379095`, and `residual_norm_max=7.7569` on the checked validation sample.
-
-The inherited evaluation interval is 24 epochs, so the 12-epoch run did not evaluate during training. A subsequent fair 4,219-sample validation compared epoch-12 Memory ON against the unchanged epoch-56 Memory OFF base. ON reported `IoU=[25.68, 23.14, 22.28, 21.21]` and `mIoU=[18.20, 14.95, 13.17, 11.51]`; OFF reported `IoU=[25.68, 23.15, 22.27, 21.21]` and `mIoU=[18.20, 14.96, 13.18, 11.53]`. ON-minus-OFF mIoU was `[0.00, -0.01, -0.01, -0.02]`, and mean future mIoU changed by `-0.0133`.
-
-The repaired historical Query path is functionally active and training-safe, but the epoch-12 Memory-only checkpoint does not improve aggregate validation quality. Epoch-5 and epoch-8 evaluations were effectively tied with epoch 12, so the result is not explained by late-stage overfitting.
-
-## Clean-Start Joint Future-Occupancy Tuning
-
-A separate joint mode starts from `ckpts/epoch_56.pth` with zero-initialized STAC-QM and simultaneously trains:
-
-```text
-query_memory.*
-position_encoder.*
-reg_branch.*
-vel_branch.*
-cls_branch.*
-ego_cross_attn.*
-```
-
-ResNet, the image neck, `pts_bbox_head`, planning/trajectory heads, and TASS remain frozen. This boundary is required by the fixed schema-v2 caches: historical Query features stay in the epoch-56 observation-query space, so the current observation-query generator must not drift during training.
-
-The optimizer contains only trainable tensors and uses three LR tiers:
-
-```text
-query_memory.*                          5e-5
-position/reg/vel/cls future branches   1e-5
-ego_cross_attn.*                        5e-6
-```
-
-The formal config trains all six horizons from iteration one for 12 epochs with global batch size 4 and validates every epoch. A separate 200-iteration smoke hook checks joint gradient connectivity, exact optimizer membership, frozen parameter/buffer hashes, immutable TASS, and 7/1040 Memory behavior before the user launches formal training.
-
-The first formal launch saved `epoch_1.pth` and then exposed an incompatible generic MMDetection validation path: `SparseWorld4DTraj` returns a dictionary, while the generic test function attempted `result[0]`. `SparseWorld4DTraj` now marks its evaluation API explicitly, training selects dedicated single/distributed SparseWorld hooks, and the dedicated collector parses occupancy/trajectory dictionaries, restores distributed sampler order, and truncates padding to the exact dataset length. Generic detector models keep their existing MMDetection hooks.
-
-The epoch-1 resume completed epoch 2 and its full validation, then exposed a separate logger incompatibility because the evaluator returns four-element IoU/mIoU lists while TensorBoard accepts only scalars. The SparseWorld hooks now flatten temporal lists into per-horizon scalar metrics plus all-horizon and future-horizon means before updating the runner log buffer. `epoch_2.pth` was validated structurally (`meta.epoch=2`, `meta.iter=9866`, 710 model tensors, 63 optimizer groups, and 63 optimizer states) and is safe to resume at epoch 3.
-
-## Synthetic Verification Result
-
-Executed:
-
-```bash
-/data/jxy/projects/env/bin/python -m pytest -q \
-  tests/test_query_memory.py tests/test_query_memory_integration.py
-```
-
-Observed:
-
-```text
-47 passed, 19 warnings
-```
-
-The suite includes schema-v1/v2 behavior, reliability/diversity, effective age, target-age selection, cache-generatable history filtering, zero motion/fusion identity, empty-history zero-gradient backward safety, real `forward_backbone()` 7/1040 instrumentation, Memory-only and joint trainability/module modes, TASS immutability, dictionary-result parsing, distributed ordering/padding truncation, and model-specific evaluation-hook routing.
-
-Configuration inheritance/routing, hook registration, tool imports, Python compilation, and patch whitespace checks were also completed.
+正式 IoU/mIoU 结论必须等 formal training 和完整 validation 完成后再写入实验汇总。

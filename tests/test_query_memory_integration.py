@@ -195,6 +195,23 @@ def test_loader_target_age_slot_placement_schema_v2(tmp_path):
     # schema-v2 labels survive selection (reliability-descending order).
     assert out['memory_label'][0, :2].tolist() == [0, 1]
     assert out['memory_label'][2, :2].tolist() == [2, 3]
+    assert out['memory_semantic_distribution'].shape == (3, 3, 17)
+    assert torch.allclose(
+        out['memory_semantic_distribution'][0, :2].sum(dim=-1),
+        torch.ones(2))
+    assert out['memory_reliability'].shape == (3, 3)
+    assert out['memory_age'].shape == (3, 3)
+    # The memory tensors are part of the collected sample and survive the
+    # first batch collation step without dropping the semantic field.
+    from torch.utils.data._utils.collate import default_collate
+    memory_fields = {
+        key: out[key] for key in (
+            'memory_query_feat', 'memory_points_metric', 'memory_label',
+            'memory_semantic_distribution', 'memory_reliability',
+            'memory_age', 'memory_valid')}
+    batched = default_collate([memory_fields])
+    assert batched['memory_semantic_distribution'].shape == (1, 3, 3, 17)
+    assert batched['memory_label'].shape == (1, 3, 3)
     # base_age = current_ts - history_ts.
     assert abs(float(out['memory_age'][0, 0]) - 1.0) < 1e-5
     assert abs(float(out['memory_age'][2, 0]) - 3.0) < 1e-5

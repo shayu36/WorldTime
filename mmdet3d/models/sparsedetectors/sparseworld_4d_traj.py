@@ -21,7 +21,7 @@ from IPython import embed
 from mmdet3d.models.sparsedetectors.bbox.utils import decode_points, encode_points, trans_coords,get_matched_inds
 from mmdet3d.models.sparsedetectors.query_memory import (
     STACQueryMemory, QueryMemoryBank, decode_points_metric,
-    logits_to_query_confidence
+    logits_to_query_confidence, FutureMemoryAdapter
 )
 from mmdet3d.models.heads import DownScaleModule3DCustom
 from mmdet3d.core.bbox import Box3DMode, Coord3DMode, LiDARInstance3DBoxes
@@ -133,6 +133,10 @@ class SparseWorld4DTraj(OPUS):
         'memory_vel_branch',
         'memory_horizon_embedding',
     )
+    # The repaired future-only topology has one auditable trainable prefix.
+    # Every original OPUS/image/trajectory parameter is frozen in this mode.
+    _FUTURE_MEMORY_TRAINABLE_PREFIXES = ('future_memory_adapter.',)
+    _FUTURE_MEMORY_TRAIN_MODULES = ('future_memory_adapter',)
 
     def __init__(self,
                  out_dim=32,
@@ -301,6 +305,22 @@ class SparseWorld4DTraj(OPUS):
             self.query_memory_cfg.get('memory_phase2_finetune_mode', False))
         self.memory_phase3_finetune_mode = bool(
             self.query_memory_cfg.get('memory_phase3_finetune_mode', False))
+        future_adapter_cfg = self.query_memory_cfg.get(
+            'future_memory_adapter', None)
+        self.future_memory_adapter_enabled = bool(
+            self.query_memory_cfg.get('future_memory_adapter_enabled', False)
+            if future_adapter_cfg is None else
+            future_adapter_cfg.get('enabled', False))
+        self.future_memory_adapter_finetune_mode = bool(
+            self.query_memory_cfg.get('future_memory_adapter_finetune_mode',
+                                      self.future_memory_adapter_enabled))
+        self.future_memory_target_horizons = tuple(
+            float(v) for v in self.query_memory_cfg.get(
+                'future_memory_target_horizons', (1.0, 2.0, 3.0)))
+        if self.future_memory_target_horizons != (1.0, 2.0, 3.0):
+            raise ValueError(
+                'FutureMemoryAdapter target horizons must be exactly '
+                '(1.0, 2.0, 3.0) seconds')
         refiner_cfg = self.query_memory_cfg.get(
             'memory_conditioned_refiner', None)
         configured_refiner_enabled = (
@@ -317,12 +337,14 @@ class SparseWorld4DTraj(OPUS):
         # route observed in the first formal Phase 3 run.
         self.memory_phase3_future_only = bool(
             self.query_memory_cfg.get('memory_phase3_future_only', False))
-        if sum((self.memory_finetune_mode,
+        if sum((self.future_memory_adapter_finetune_mode,
+                self.memory_finetune_mode,
                 self.memory_joint_finetune_mode,
                 self.memory_phase2_finetune_mode,
                 self.memory_phase3_finetune_mode)) > 1:
             raise ValueError(
-                'memory_finetune_mode, memory_joint_finetune_mode, '
+                'future_memory_adapter_finetune_mode, memory_finetune_mode, '
+                'memory_joint_finetune_mode, '
                 'memory_phase2_finetune_mode, and '
                 'memory_phase3_finetune_mode are mutually exclusive')
         self.query_memory_source = self.query_memory_cfg.get('source', 'cache')
@@ -338,6 +360,8 @@ class SparseWorld4DTraj(OPUS):
         self.frozen_num_stamps_all = None
         self.frozen_ind_stamps_all = None
         self._frozen_rap_masks = None
+        self.future_memory_adapter = None
+        query_embed_dims = int(self.pts_bbox_head.transformer.embed_dims)
         if self.query_memory_module_enabled:
             if self.query_memory_source not in ('cache', 'online'):
                 raise ValueError(
@@ -394,7 +418,18 @@ class SparseWorld4DTraj(OPUS):
                     max_per_class=self.query_memory_cfg.get(
                         'max_per_class', 64))
 
-        query_embed_dims = int(self.pts_bbox_head.transformer.embed_dims)
+        # Do not route the repaired adapter through STACQueryMemory or the
+        # legacy MemoryConditionedRefiner.  It is an independent output-only
+        # correction stream and is instantiated only by the dedicated config.
+        if getattr(self, 'future_memory_adapter_enabled', False):
+            adapter_cfg = dict(future_adapter_cfg or {})
+            adapter_cfg.pop('enabled', None)
+            adapter_cfg.setdefault('embed_dims', query_embed_dims)
+            adapter_cfg.setdefault('num_classes', 17)
+            adapter_cfg.setdefault('num_points', self.num_refines)
+            adapter_cfg.setdefault('pc_range', self.pc_range)
+            self.future_memory_adapter = FutureMemoryAdapter(**adapter_cfg)
+
         self.memory_refiner = MemoryConditionedRefiner(query_embed_dims)
         self.memory_horizon_embedding = nn.Embedding(
             self.num_fu_frames + 1, query_embed_dims)
@@ -442,8 +477,9 @@ class SparseWorld4DTraj(OPUS):
 
 
     def trans_points(self, points_proposal, points_delta, trans_matrix):
-
-        inv_trans_matrix = torch.linalg.inv(trans_matrix.cpu()).cuda()
+        trans_matrix = trans_matrix.to(device=points_proposal.device,
+                                       dtype=points_proposal.dtype)
+        inv_trans_matrix = torch.linalg.inv(trans_matrix)
         points_proposal = decode_points(points_proposal, self.pc_range)
         # points_proposal = points_proposal.mean(dim=2, keepdim=True) fengze
         new_points = torch.matmul(points_proposal, trans_matrix[..., :3, :3].transpose(1, 2)) + trans_matrix[..., None,
@@ -454,6 +490,153 @@ class SparseWorld4DTraj(OPUS):
 
         return encode_points(new_points, self.pc_range)
 
+    def _forward_backbone_future_memory_adapter(
+            self, img_metas, kwargs, B, ego_feat, outs, query_feat,
+            query_pos, query_cls, ind_stamps_all, memory_context):
+        """Run the repaired output-only FutureMemoryAdapter topology.
+
+        ``state_*`` tensors below are the unmodified OPUS baseline stream.  A
+        target-horizon adapter is evaluated from a snapshot of that stream and
+        its corrected outputs are appended to the forecast lists only; no
+        corrected feature, position, or logit is ever written back to state.
+        """
+        current_mask = ind_stamps_all == 0
+        state_feat = query_feat[:, current_mask]
+        state_pos = query_pos[:, current_mask]
+        state_timestamp = query_pos.new_zeros(
+            B, state_feat.shape[1], self.num_refines, 1)
+        base_current_cls = query_cls[:, current_mask]
+        outputs = dict(
+            cls_score=base_current_cls,
+            refine_pts=state_pos,
+            outs=outs,
+            _raw_query_feat=state_feat,
+            _raw_query_pos=state_pos,
+            _raw_query_cls=base_current_cls)
+        forecast_points_list = []
+        forecast_semantics_list = []
+        pred_trajs_list = []
+        forecast_points_mask_list = []
+        adapter_diagnostics = []
+        base_cls_list = []
+        base_points_list = []
+
+        target_ego2global = None
+        if memory_context is not None and \
+                memory_context.get('memory_source_ego2global') is not None:
+            target_ego2global = self._current_ego2global_tensor(
+                img_metas, state_feat.device)
+
+        # The six OPUS internal states are 0.5, 1.0, ..., 3.0 s.  Only state
+        # indices 1, 3, and 5 (1/2/3 s) receive the new adapter.
+        target_horizons = {1: (0, '1'), 3: (1, '2'), 5: (2, '3')}
+        for interval in range(self.num_fu_frames):
+            # Baseline trajectory/state update.  Inputs are intentionally
+            # detached exactly as in the original OPUS recurrence.
+            fused_ego_feat, _ = self.ego_cross_attn(
+                ego_feat.new_ones(B, 1, 3) * 0.5, ego_feat,
+                state_pos.detach(), state_feat.detach())
+            pred_traj = self.traj_head(fused_ego_feat)
+            pred_trajs_list.append(pred_traj)
+
+            scheduled_mask = ind_stamps_all == interval + 1
+            scheduled_feat = query_feat[:, scheduled_mask]
+            scheduled_pos = query_pos[:, scheduled_mask]
+            if scheduled_feat.shape[1] > 0:
+                state_feat = torch.cat([state_feat, scheduled_feat], dim=1)
+                state_pos = torch.cat([state_pos, scheduled_pos], dim=1)
+                state_timestamp = torch.cat([
+                    state_timestamp,
+                    state_pos.new_ones(
+                        B, scheduled_feat.shape[1], self.num_refines, 1) * 0.5
+                ], dim=1)
+
+            pos_embedding = self.position_encoder(
+                torch.cat([state_pos, state_timestamp], dim=-1).flatten(2, 3))
+            state_feat = state_feat + fused_ego_feat + pos_embedding
+            base_cls = self.cls_branch(state_feat).unflatten(-1, (-1, 17))
+            vel_offset = self.vel_branch(state_feat).unflatten(-1, (-1, 2))
+            reg_offset = self.reg_branch(state_feat).unflatten(-1, (-1, 3)) * 0.5
+            pred_labels = base_cls.argmax(-1)
+            pred_moving_mask = torch.logical_and(
+                pred_labels >= 2, pred_labels <= 10).unsqueeze(-1)
+            reg_offset = torch.cat([
+                reg_offset[..., :2] + vel_offset * pred_moving_mask,
+                reg_offset[..., 2:]], dim=-1).flatten(2, 3)
+            state_pos = self.refine_points(state_pos, reg_offset)
+
+            # Snapshot baseline outputs before any target-horizon correction.
+            base_cls_snapshot = base_cls
+            base_pos_snapshot = state_pos
+            output_cls = base_cls_snapshot
+            output_pos = base_pos_snapshot
+            diag = dict(enabled=False, internal_step=int(interval + 1),
+                        horizon_id=None, query_count=int(state_feat.shape[1]))
+            if interval in target_horizons:
+                horizon_id, horizon_name = target_horizons[interval]
+                if memory_context is None:
+                    result = self.future_memory_adapter(
+                        state_feat, decode_points_metric(state_pos, self.pc_range),
+                        base_cls_snapshot, None, horizon_id)
+                else:
+                    result = self.future_memory_adapter(
+                        state_feat, decode_points_metric(state_pos, self.pc_range),
+                        base_cls_snapshot, memory_context, horizon_id,
+                        target_ego2global=target_ego2global)
+                gate = result['gate']
+                output_cls = base_cls_snapshot + gate[..., None] * (
+                    result['delta_s'] + result['delta_o'])
+                # The historical ``refine_points`` helper intentionally
+                # averages proposal points before applying a Baseline
+                # regression update.  Reusing that averaging operation for a
+                # zero-initialized Memory residual would change a Baseline
+                # output even when ``DeltaP_memory == 0``.  The adapter path
+                # therefore uses the coordinate-safe residual variant below:
+                # decode the already-refined Baseline points, add only the
+                # gated Memory delta, then encode back without another mean.
+                output_pos = self._refine_future_memory_points(
+                    base_pos_snapshot,
+                    (gate[..., None] * result['delta_p']).flatten(2, 3))
+                diag = dict(result.get('diagnostics', {}))
+                diag.update(enabled=True, internal_step=int(interval + 1),
+                            horizon_id=int(horizon_id),
+                            horizon_name=horizon_name,
+                            query_count=int(state_feat.shape[1]))
+            forecast_semantics_list.append(output_cls)
+            forecast_points_list.append(output_pos)
+            base_cls_list.append(base_cls_snapshot)
+            base_points_list.append(base_pos_snapshot)
+
+            if self.training:
+                if 'temporal_trajs' not in kwargs:
+                    raise KeyError(
+                        'temporal_trajs is required for future trajectory loss')
+                ego2lidar = torch.as_tensor(
+                    np.stack([meta['ego2lidar'] for meta in img_metas]),
+                    device=state_pos.device, dtype=torch.float32)
+                gt_traj = kwargs['temporal_trajs'][:, interval:interval + 1, :]
+                pred_traj_expand = torch.cat(
+                    [-gt_traj, torch.zeros_like(pred_traj[:, :, :1])], dim=-1)
+                gt_points = self.trans_points(
+                    output_pos.flatten(1, 2), pred_traj_expand,
+                    ego2lidar).reshape(output_pos.shape)
+                forecast_points_mask_list.append(gt_points[..., 0] >= 0)
+            adapter_diagnostics.append(diag)
+
+        outputs.update(
+            forecast_semantics_list=forecast_semantics_list,
+            forecast_points_list=forecast_points_list,
+            pred_trajs_list=pred_trajs_list,
+            forecast_points_mask_list=forecast_points_mask_list,
+            memory_adapter_diagnostics=adapter_diagnostics,
+            # Raw baseline snapshots are retained for audit/tests and are not
+            # used as recurrent state after this point.
+            base_cls_score=base_current_cls,
+            base_refine_pts=query_pos[:, current_mask],
+            baseline_forecast_semantics_list=base_cls_list,
+            baseline_forecast_points_list=base_points_list)
+        return outputs
+
     def refine_points(self, points_proposal, points_delta):
         B, Q = points_delta.shape[:2]
         points_delta = points_delta.reshape(B, Q, self.num_refines, 3)
@@ -462,6 +645,20 @@ class SparseWorld4DTraj(OPUS):
         points_proposal = points_proposal.mean(dim=2, keepdim=True)
         new_points = points_proposal + points_delta
         return encode_points(new_points, self.pc_range)
+
+    def _refine_future_memory_points(self, points_proposal, points_delta):
+        """Apply only a Memory point residual in metric coordinates.
+
+        ``refine_points`` is the original OPUS recurrence helper and reduces
+        the proposal to its mean before adding a regression delta.  A
+        correction stream must be identity when its residual is zero, so it
+        keeps every Baseline proposal point and applies only the adapter
+        delta.  Both conversions use the same project coordinate helpers.
+        """
+        B, Q = points_delta.shape[:2]
+        points_delta = points_delta.reshape(B, Q, self.num_refines, 3)
+        points_metric = decode_points(points_proposal, self.pc_range)
+        return encode_points(points_metric + points_delta, self.pc_range)
 
     def loss_traj(self, pred_traj, gt_traj, ego_interval):
         loss_dict = dict()
@@ -537,6 +734,10 @@ class SparseWorld4DTraj(OPUS):
             memory_joint_finetune_mode=False,
             memory_phase2_finetune_mode=False,
             memory_phase3_finetune_mode=False,
+            future_memory_adapter_enabled=False,
+            future_memory_adapter_finetune_mode=False,
+            future_memory_target_horizons=(1.0, 2.0, 3.0),
+            future_memory_adapter=None,
             memory_conditioned_refiner=None,
             memory_phase3_base_aux_weight=0.25,
             memory_phase3_future_only=False,
@@ -581,12 +782,15 @@ class SparseWorld4DTraj(OPUS):
 
     def _memory_tuning_active(self):
         return bool(
+            getattr(self, 'future_memory_adapter_finetune_mode', False) or
             getattr(self, 'memory_finetune_mode', False) or
             getattr(self, 'memory_joint_finetune_mode', False) or
             getattr(self, 'memory_phase2_finetune_mode', False) or
             getattr(self, 'memory_phase3_finetune_mode', False))
 
     def memory_tuning_trainable_prefixes(self):
+        if getattr(self, 'future_memory_adapter_finetune_mode', False):
+            return self._FUTURE_MEMORY_TRAINABLE_PREFIXES
         if getattr(self, 'memory_phase3_finetune_mode', False):
             prefixes = []
             if getattr(self, 'query_memory_enabled', False):
@@ -610,6 +814,8 @@ class SparseWorld4DTraj(OPUS):
         return tuple()
 
     def memory_tuning_train_modules(self):
+        if getattr(self, 'future_memory_adapter_finetune_mode', False):
+            return self._FUTURE_MEMORY_TRAIN_MODULES
         if getattr(self, 'memory_phase3_finetune_mode', False):
             modules = []
             if getattr(self, 'query_memory_enabled', False):
@@ -641,6 +847,7 @@ class SparseWorld4DTraj(OPUS):
         freeze_base = bool(
             self.query_memory_cfg.get('freeze_base_model', False))
         tuning_modes = (
+            getattr(self, 'future_memory_adapter_finetune_mode', False),
             getattr(self, 'memory_finetune_mode', False),
             getattr(self, 'memory_joint_finetune_mode', False),
             getattr(self, 'memory_phase2_finetune_mode', False),
@@ -648,11 +855,14 @@ class SparseWorld4DTraj(OPUS):
         )
         if sum(tuning_modes) > 1:
             raise ValueError(
-                'memory_finetune_mode, memory_joint_finetune_mode, '
+                'future_memory_adapter_finetune_mode, memory_finetune_mode, '
+                'memory_joint_finetune_mode, '
                 'memory_phase2_finetune_mode, and '
                 'memory_phase3_finetune_mode are mutually exclusive')
         if self._memory_tuning_active():
-            if getattr(self, 'memory_phase3_finetune_mode', False):
+            if getattr(self, 'future_memory_adapter_finetune_mode', False):
+                mode_name = 'future_memory_adapter_finetune_mode'
+            elif getattr(self, 'memory_phase3_finetune_mode', False):
                 mode_name = 'memory_phase3_finetune_mode'
             elif getattr(self, 'memory_phase2_finetune_mode', False):
                 mode_name = 'memory_phase2_finetune_mode'
@@ -660,21 +870,34 @@ class SparseWorld4DTraj(OPUS):
                 mode_name = 'memory_joint_finetune_mode'
             else:
                 mode_name = 'memory_finetune_mode'
-            if (getattr(self, 'memory_phase3_finetune_mode', False) and
+            if (getattr(self, 'future_memory_adapter_finetune_mode', False)):
+                if not self.future_memory_adapter_enabled or \
+                        self.future_memory_adapter is None:
+                    raise ValueError(
+                        'future_memory_adapter_finetune_mode=True requires '
+                        'an enabled FutureMemoryAdapter')
+                if self.query_memory_source != 'cache':
+                    raise ValueError(
+                        'future_memory_adapter_finetune_mode=True requires '
+                        'source="cache"')
+            elif (getattr(self, 'memory_phase3_finetune_mode', False) and
                     not self.query_memory_enabled and
                     not self.memory_conditioned_refiner_enabled):
                 raise ValueError(
                     'memory_phase3_finetune_mode requires at least one of '
                     'Memory or refiner to be enabled')
-            if (not getattr(self, 'memory_phase3_finetune_mode', False) and
+            if (not getattr(self, 'future_memory_adapter_finetune_mode', False) and
+                    not getattr(self, 'memory_phase3_finetune_mode', False) and
                     (not self.query_memory_enabled or
                      self.query_memory is None)):
                 raise ValueError(
                     f'{mode_name}=True requires enabled STAC-QM')
-            if self.query_memory_enabled and self.query_memory is None:
+            if (not getattr(self, 'future_memory_adapter_finetune_mode', False) and
+                    self.query_memory_enabled and self.query_memory is None):
                 raise ValueError(
                     f'{mode_name}=True requires enabled STAC-QM')
-            if self.query_memory_enabled and self.query_memory_source != 'cache':
+            if (not getattr(self, 'future_memory_adapter_finetune_mode', False) and
+                    self.query_memory_enabled and self.query_memory_source != 'cache'):
                 raise ValueError(
                     f'{mode_name}=True requires source="cache"')
             if not freeze_base:
@@ -979,13 +1202,18 @@ class SparseWorld4DTraj(OPUS):
         return value
 
     def _query_memory_context(self, kwargs, img_metas, device, dtype):
-        if not self.query_memory_enabled:
+        if not getattr(self, 'query_memory_enabled', False) and \
+                not getattr(self, 'future_memory_adapter_enabled', False):
             return None
         if self.query_memory_source == 'cache':
             required = [
                 'memory_query_feat', 'memory_points_metric', 'memory_conf',
                 'memory_valid', 'memory_source_ego2global', 'memory_age'
             ]
+            if getattr(self, 'future_memory_adapter_enabled', False):
+                required.extend((
+                    'memory_semantic_distribution', 'memory_label',
+                    'memory_reliability'))
             missing = [key for key in required if key not in kwargs]
             if missing:
                 if self._memory_tuning_active():
@@ -1014,6 +1242,11 @@ class SparseWorld4DTraj(OPUS):
             if 'memory_label' in kwargs:
                 context['memory_label'] = self._tensor_from_memory_kwargs(
                     kwargs, 'memory_label', device, torch.long)
+            if 'memory_semantic_distribution' in kwargs:
+                context['memory_semantic_distribution'] = \
+                    self._tensor_from_memory_kwargs(
+                        kwargs, 'memory_semantic_distribution', device,
+                        torch.float32)
             return context
 
         if self.training:
@@ -1197,6 +1430,30 @@ class SparseWorld4DTraj(OPUS):
             B, curr_query_feat.shape[1], self.num_refines, 1)
         curr_query_cls = query_cls[:, ind_stamps_all == 0]
         curr_query_cls_for_memory = curr_query_cls
+
+        if getattr(self, 'future_memory_adapter_enabled', False):
+            # The repaired adapter has its own cache read and output-only
+            # correction stream.  It never enters the legacy STAC/refiner
+            # path below, so baseline recurrence remains byte-for-byte in
+            # terms of state topology.
+            memory_context = self._query_memory_context(
+                kwargs, img_metas, curr_query_feat.device,
+                curr_query_feat.dtype)
+            if memory_context is None:
+                raise RuntimeError(
+                    'FutureMemoryAdapter requires a cache memory context')
+            memory_valid = memory_context.get('memory_valid')
+            if isinstance(memory_valid, torch.Tensor) and memory_valid.numel():
+                if memory_valid.ndim >= 3:
+                    valid_slots = memory_valid.any(dim=-1).float().sum(dim=-1)
+                else:
+                    valid_slots = memory_valid.float().sum(dim=-1)
+                self._last_query_memory_valid_slots = float(
+                    valid_slots.mean().item())
+            return self._forward_backbone_future_memory_adapter(
+                img_metas, kwargs, B, ego_feat, outs, query_feat, query_pos,
+                query_cls, ind_stamps_all, memory_context)
+
         memory_refiner_diagnostics = []
         outputs = dict(cls_score=curr_query_cls,
                        refine_pts=curr_query_pos,
@@ -1432,7 +1689,20 @@ class SparseWorld4DTraj(OPUS):
 
         losses = dict()
         ind_stamps_all = self.pts_bbox_head.ind_stamps_all
-        if self.pretrain:
+        if self.future_memory_adapter_enabled:
+            # Keep the 0 s objective exactly on the raw OPUS observation
+            # queries.  The adapter is not present in this path.
+            current_outs = dict(outs)
+            current_outs['init_points'] = None
+            current_outs['all_cls_scores'] = [
+                score[:, ind_stamps_all == 0]
+                for score in outs['all_cls_scores']]
+            current_outs['all_refine_pts'] = [
+                points[:, ind_stamps_all == 0]
+                for points in outs['all_refine_pts']]
+            losses.update(self.pts_bbox_head.loss(
+                voxel_semantics, current_outs))
+        elif self.pretrain:
             loss_inputs = [voxel_semantics, temporal_semantics, temporal2ego, outs]
             losses.update(self.pts_bbox_head.loss_pretrain(*loss_inputs))
         else:
@@ -1469,9 +1739,33 @@ class SparseWorld4DTraj(OPUS):
         voxel_semantics_temporal = [sem['voxel_semantics'] for sem in kwargs['temporal_semantics'].values()]
 
         num_fu_frames = len(forecast_semantics_list)
-        losses.update(
-            self.pts_bbox_head.loss_future(voxel_semantics_temporal[:num_fu_frames],
-                                           forecast_points_list,forecast_semantics_list,forecast_points_mask_list))
+        if self.future_memory_adapter_enabled:
+            # Only target horizons receive corrected-output supervision.  The
+            # existing validated matching loss is reused one horizon at a
+            # time, then names are made explicit to avoid confusing internal
+            # 0.5 s step numbers with evaluation horizons.
+            for step_index, horizon_name in ((1, '1s'), (3, '2s'),
+                                             (5, '3s')):
+                if step_index >= num_fu_frames or \
+                        step_index >= len(voxel_semantics_temporal):
+                    raise RuntimeError(
+                        f'FutureMemoryAdapter requires temporal step '
+                        f'{step_index + 1} for mem_{horizon_name} loss')
+                raw = self.pts_bbox_head.loss_future(
+                    [voxel_semantics_temporal[step_index]],
+                    [forecast_points_list[step_index]],
+                    [forecast_semantics_list[step_index]],
+                    [forecast_points_mask_list[step_index]])
+                losses[f'mem_{horizon_name}.loss_cls'] = raw[
+                    'fu1.loss_cls']
+                losses[f'mem_{horizon_name}.loss_pts'] = raw[
+                    'fu1.loss_pts']
+        else:
+            losses.update(
+                self.pts_bbox_head.loss_future(
+                    voxel_semantics_temporal[:num_fu_frames],
+                    forecast_points_list, forecast_semantics_list,
+                    forecast_points_mask_list))
         for interval,pred_traj in enumerate(pred_trajs_list):
 
             loss_traj = self.loss_traj(pred_traj.squeeze(1), kwargs['temporal_trajs'][:, interval, :], interval + 1)

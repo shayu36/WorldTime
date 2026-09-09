@@ -5,11 +5,11 @@ from .opus_transformer import OPUSTransformer
 from .query_memory import (
     STACQueryMemory, QueryMemoryBank, EgoPoseAligner,
     CausalQueryMemoryAttention, ConfidenceGatedFusion,
-    logits_to_query_confidence
+    logits_to_query_confidence, FutureMemoryAdapter
 )
 __all__ = [
     'SparseWorld4DTraj', 'OPUS', 'OPUSHead', 'OPUSTransformer',
     'STACQueryMemory', 'QueryMemoryBank', 'EgoPoseAligner',
     'CausalQueryMemoryAttention', 'ConfidenceGatedFusion',
-    'logits_to_query_confidence',
+    'logits_to_query_confidence', 'FutureMemoryAdapter',
 ]

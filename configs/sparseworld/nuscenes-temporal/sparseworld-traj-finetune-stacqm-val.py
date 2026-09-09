@@ -266,7 +266,7 @@ train_pipeline = [
         type='Collect4D', keys=['img', 'voxel_semantics',
                                 'mask_lidar','mask_camera',
                                  'rays', 'temporal_semantics', 'temporal_rays', 'temporal_ego_states', 'temporal_trajs','temporal2ego','temporal_ego2global',
-                                 'memory_query_feat', 'memory_points_metric', 'memory_conf', 'memory_reliability', 'memory_label', 'memory_valid', 'memory_source_ego2global', 'memory_age',
+                                 'memory_query_feat', 'memory_points_metric', 'memory_conf', 'memory_reliability', 'memory_label', 'memory_semantic_distribution', 'memory_valid', 'memory_source_ego2global', 'memory_age',
                                ],meta_keys = ('filename','ori_shape','img_shape','pad_shape','lidar2img','img_timestamp','timestamp','ego2lidar','ego2global','sample_idx','scene_token','scene_name','frame_idx',))
 ]
 
@@ -302,7 +302,7 @@ test_pipeline = [
             dict(type='Collect4D', keys=['img', 'voxel_semantics',
                                         'mask_lidar','mask_camera','temporal_semantics',
                                         'temporal_ego_states', 'temporal_trajs', 'temporal_agent_boxes', 'temporal_agent_feats',
-                                        'memory_query_feat', 'memory_points_metric', 'memory_conf', 'memory_reliability', 'memory_label', 'memory_valid', 'memory_source_ego2global', 'memory_age',],
+                                        'memory_query_feat', 'memory_points_metric', 'memory_conf', 'memory_reliability', 'memory_label', 'memory_semantic_distribution', 'memory_valid', 'memory_source_ego2global', 'memory_age',],
                  meta_keys = ['filename','box_type_3d','ori_shape','img_shape','pad_shape','sample_idx',
                               'lidar2img','img_timestamp','timestamp','ego2lidar','ego2global','scene_token','scene_name','frame_idx','gt_boxes','gt_labels','occ_gt_path'])
         ])
