@@ -52,8 +52,9 @@ M_q = stable_unique(TopK(A_geometry) ∪ TopK(A_semantic))
 
 geometry 路径始终保留，显式语义错误时仍可进入候选并集。训练模式可按
 `semantic_dropout_probability` 将当前语义替换为均匀分布；evaluation 严格关闭。
-Point Adapter 额外接收 JS divergence（当前点分布与历史分布的对称分歧），
-因此语义不一致的近邻 Memory 有机会用于纠错，而不是在检索阶段硬删除。
+Point Adapter 接收完整的当前/历史逐点语义概率、语义差向量、余弦相似度和
+JS divergence。因此语义不一致的近邻 Memory 有机会用于纠错，而不是在检索
+阶段硬删除。
 
 ## 5. Effective age
 
@@ -131,3 +132,90 @@ future_memory_adapter_v2.*
 Baseline、原始 query encoding、OPUS head、recurrence、原始分类/回归分支均冻结，
 冻结模块保持 eval mode。V2 q/k/v、位置和语义投影使用正常 Xavier 初始化，gate
 bias 为 -1，三个 residual head 的最后一层零初始化；没有 `1e-3` 全局缩放。
+
+## 9. 候选隔离与候选内粗 Context
+
+早期 V2 曾将全部 Memory Query 的 coarse_k.mean 与 coarse_v.mean 合成
+coarse_summary，并注入所有当前 Query。这会绕过 memory_valid、effective age、
+最大年龄、空间半径和 Top-K 并集，现已彻底删除。
+
+现在每个 Query 的粗读取严格限定为：
+
+    U_q = stable_unique(TopK(A_geometry) union TopK(A_semantic))
+    alpha_qm = MaskedSoftmax(A_semantic[q,m]), m in U_q
+    H_coarse[q] = sum(m in U_q) alpha_qm * V_m
+
+H_coarse 的 shape 为 [B,Q,C]。重复入选的候选只保留第一次出现的位置；原始连续
+候选分数在并集内部参与 softmax。全部候选无效时 alpha 与 H_coarse 严格为零。
+未选中、memory_valid=False、effective age 超限或粗半径外的 Memory 不会进入
+粗 Context，也不会展开到 Point Attention。当前点自身的 qpoint 仅作为 Point
+Attention 的 Query 条件，不会累加进历史 Point Memory Context。
+
+## 10. 完整逐点语义分歧特征
+
+Semantic Dropout 只修改检索条件 P_retrieval 和 w_retrieval，不修改 Baseline
+logits，也不替换 Adapter 使用的 P_current。历史 Query 级语义广播到候选内部
+的历史点，经 Point Attention 后形成每个当前点独立的 P_memory。
+
+Adapter 显式接收以下 shape：
+
+    P_current:             [B,Q,R,17]
+    P_memory:              [B,Q,R,17]
+    P_current-P_memory:    [B,Q,R,17]
+    cosine_similarity:     [B,Q,R,1]
+    JS_divergence:         [B,Q,R,1]
+    current_entropy:       [B,Q,R,1]
+    top1_top2_margin:      [B,Q,R,1]
+    semantic_weight:       [B,Q,R,1]
+
+无有效候选时 P_memory、语义差向量、cosine 和 JS 均安全置零，Point Gate 为零。
+Adapter 输入宽度由模块参数推导为
+5*embed_dims + 3*num_classes + 10，默认是 1341；没有写死 Query 数、点数或
+类别数。语义不同仍不是 hard mask，geometry 分支持终保留。
+
+## 11. eligible 与 selected 候选计数
+
+- eligible_point_count [B,Q,R]：通过 Memory 有效性、effective age、粗候选
+  限制和 point radius 后，进入 Point Top-K 选择范围的历史点数量。
+- selected_point_count [B,Q,R]：完成 Point Top-K 后实际参与 Point Attention
+  的有效历史点数量，不超过 point_topk。
+
+Adapter 同时使用两者：eligible 除以本 Query 的粗候选展开容量
+Ku*R_memory，selected 除以 point_topk。Padding 与无效候选不计数；空候选时
+两者均为零。
+
+## 12. 位置残差的严格恒等
+
+已核实 SparseWorld point proposal 使用 encode_points/decode_points 定义的
+线性归一化坐标。V2 只处理有候选且 gate 非零的点，并计算相对编码变化：
+
+    decoded_base = decode(base_pos)
+    encoded_base = encode(decoded_base)
+    encoded_shifted = encode(decoded_base + delta_position_metric)
+    encoded_delta = encoded_shifted - encoded_base
+    output_pos = base_pos + encoded_delta
+
+当 delta_position_metric 为零时，两次 encode 输入相同，encoded_delta 严格为
+零；无候选或 gate 为零时直接返回原始 base_pos。非零残差仍按 pc_range 转换，
+输入不被原地修改，位置学习路径也没有 detach。
+
+## 13. cls_weights 统一转换
+
+权重来源优先级不变：首先读取 pts_bbox_head.train_cfg['cls_weights']，不存在时
+回退模型 class_weights。list、tuple、CPU Tensor 和 CUDA Tensor 最终统一使用
+torch.as_tensor，并指定 S_sem 的 device 与 dtype，然后 flatten 为一维。
+
+转换后严格检查元素数量等于 num_classes；异常同时报告实际数量与期望数量。
+原始配置对象不被修改。同一转换函数也用于 sparse SoftVoxel loss。
+
+## 14. 本轮验收边界
+
+本轮仅完成静态检查、Python 编译、配置解析和不涉及反向传播的小型纯函数/前向
+验收，包括 B=1/B=2、Memory 少于/多于 Top-K、候选隔离、语义特征、位置严格
+恒等以及 loss forward 边界输入。
+
+本轮没有执行 backward、torch.autograd.grad、optimizer step、梯度验收、训练
+数据迭代、200-iteration smoke、V1 对照实验、V2 正式训练或完整 nuScenes
+评估。因此当前只说明已知代码问题已修正且静态/前向验收通过；尚未进行梯度
+验收和训练前 smoke，不能据此声称 V2 已具备正式训练结论，也没有新的
+IoU/mIoU 提升结论。

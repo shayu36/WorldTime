@@ -22,7 +22,8 @@ from mmdet3d.models.sparsedetectors.bbox.utils import decode_points, encode_poin
 from mmdet3d.models.sparsedetectors.query_memory import (
     STACQueryMemory, QueryMemoryBank, decode_points_metric,
     logits_to_query_confidence, FutureMemoryAdapter, FutureMemoryAdapterV2,
-    decode_semantic_occupancy_logits, sparse_soft_voxel_iou_loss
+    decode_semantic_occupancy_logits, apply_metric_position_residual,
+    future_memory_v2_point_losses
 )
 from mmdet3d.models.heads import DownScaleModule3DCustom
 from mmdet3d.core.bbox import Box3DMode, Coord3DMode, LiDARInstance3DBoxes
@@ -643,10 +644,20 @@ class SparseWorld4DTraj(OPUS):
                 # therefore uses the coordinate-safe residual variant below:
                 # decode the already-refined Baseline points, add only the
                 # gated Memory delta, then encode back without another mean.
+                gated_delta = (
+                    gate * result['delta_p'] if adapter_is_v2 else
+                    gate[..., None] * result['delta_p'])
+                active_position_mask = None
+                if adapter_is_v2:
+                    active_position_mask = result.get(
+                        'diagnostics', {}).get('has_candidate')
+                    gate_active = gate.squeeze(-1) != 0
+                    active_position_mask = (
+                        gate_active if active_position_mask is None else
+                        active_position_mask & gate_active)
                 output_pos = self._refine_future_memory_points(
-                    base_pos_snapshot,
-                    (gate * result['delta_p'] if adapter_is_v2 else
-                     gate[..., None] * result['delta_p']).flatten(2, 3))
+                    base_pos_snapshot, gated_delta.flatten(2, 3),
+                    active_mask=active_position_mask)
                 diag = dict(result.get('diagnostics', {}))
                 diag.update(enabled=True, internal_step=int(interval + 1),
                             horizon_id=int(horizon_id),
@@ -706,103 +717,23 @@ class SparseWorld4DTraj(OPUS):
     def _future_memory_v2_losses(self, semantic_logits, occupancy_logits,
                                   points, points_mask, gt_voxel_semantics):
         """Compute point occupancy/semantic and sparse voxel losses."""
-        B, Q, R, C = semantic_logits.shape
-        device = semantic_logits.device
-        points_mask = (torch.ones(B, Q, R, dtype=torch.bool, device=device)
-                       if points_mask is None else points_mask.to(device).bool())
-        metric = decode_points_metric(points, self.pc_range).float()
-        origin = self.pc_range[:3].to(device=device, dtype=torch.float32)
         voxel_size = getattr(self.pts_bbox_head, 'voxel_size',
-                             torch.tensor([0.4, 0.4, 0.4], device=device))
-        voxel_size = voxel_size.to(device=device, dtype=torch.float32)
-        grid = torch.as_tensor(gt_voxel_semantics.shape[1:4], device=device)
-        index = torch.floor((metric - origin) / voxel_size).long()
-        inside = ((index >= 0) & (index < grid)).all(-1)
-        safe = index.clamp_min(0)
-        for dim in range(3):
-            safe[..., dim] = safe[..., dim].clamp_max(grid[dim] - 1)
-        batch = torch.arange(B, device=device)[:, None, None].expand(B, Q, R)
-        gt_tensor = gt_voxel_semantics.to(device=device).long()
-        labels = gt_tensor[batch, safe[..., 0], safe[..., 1], safe[..., 2]]
-        centres = (safe.float() + 0.5) * voxel_size + origin
+                             (0.4, 0.4, 0.4))
         loss_cfg = getattr(self, 'future_memory_v2_loss_cfg', {})
-        radius = float(loss_cfg.get(
-            'positive_radius', float(voxel_size.max().item()) * 0.5))
-        valid = points_mask & inside & torch.isfinite(metric).all(-1)
-        # Occupancy target follows the evaluator notion: nearest non-empty GT
-        # voxel centre, rather than merely the GT label at the predicted voxel.
-        nearest_dist = torch.full((B, Q, R), float('inf'), device=device)
-        nearest_label = torch.zeros((B, Q, R), dtype=torch.long, device=device)
-        empty_label = int(getattr(self, 'empty_idx', 17))
-        for b in range(B):
-            gt_idx = torch.nonzero(gt_tensor[b] != empty_label, as_tuple=False)
-            if gt_idx.numel() == 0:
-                continue
-            gt_centres = (gt_idx.float() + 0.5) * voxel_size + origin
-            gt_labels = gt_tensor[b][gt_idx[:, 0], gt_idx[:, 1], gt_idx[:, 2]]
-            pred_flat = metric[b].reshape(-1, 3)
-            near = torch.full((pred_flat.shape[0],), float('inf'), device=device)
-            near_idx = torch.zeros(pred_flat.shape[0], dtype=torch.long, device=device)
-            # Chunk both axes: no point×all-GT distance matrix is retained.
-            for ps in range(0, pred_flat.shape[0], 2048):
-                pe = min(pred_flat.shape[0], ps + 2048)
-                local_dist = torch.full((pe - ps,), float('inf'), device=device)
-                local_idx = torch.zeros(pe - ps, dtype=torch.long, device=device)
-                for gs in range(0, gt_centres.shape[0], 8192):
-                    ge = min(gt_centres.shape[0], gs + 8192)
-                    d = torch.cdist(pred_flat[ps:pe], gt_centres[gs:ge])
-                    dmin, didx = d.min(-1)
-                    update = dmin < local_dist
-                    local_dist = torch.where(update, dmin, local_dist)
-                    local_idx = torch.where(update, didx + gs, local_idx)
-                near[ps:pe] = local_dist
-                near_idx[ps:pe] = local_idx
-            nearest_dist[b] = near.reshape(Q, R)
-            nearest_label[b] = gt_labels[near_idx].reshape(Q, R)
-        positive = valid & (nearest_dist <= radius)
-        labels = torch.where(positive, nearest_label, labels)
-        y_occ = positive.float()
-        occ = occupancy_logits.squeeze(-1)
-        valid_count = valid.float().sum().clamp_min(1.)
-        loss_occ = (F.binary_cross_entropy_with_logits(
-            occ, y_occ, reduction='none') * valid.float()).sum() / valid_count
         configured_weights = getattr(self.pts_bbox_head, 'train_cfg', {}).get(
             'cls_weights', None)
         class_weights = (configured_weights if configured_weights is not None
                          else getattr(self, 'class_weights', None))
-        if class_weights is not None:
-            class_weights = class_weights.to(device=device,
-                                              dtype=semantic_logits.dtype)
-        if positive.any():
-            loss_sem = F.cross_entropy(semantic_logits.reshape(-1, C)[positive.reshape(-1)],
-                                       labels.reshape(-1)[positive.reshape(-1)].clamp(0, C - 1),
-                                       weight=class_weights)
-        else:
-            loss_sem = semantic_logits.sum() * 0.
         score_thr = self.pts_bbox_head.test_cfg.get('score_thr', 0.1)
-        score_thr = torch.as_tensor(score_thr, device=device,
-                                    dtype=semantic_logits.dtype).flatten()
-        if score_thr.numel() == 1:
-            score_thr = score_thr.expand(C)
-        if score_thr.numel() < C:
-            score_thr = F.pad(score_thr, (0, C - score_thr.numel()),
-                              value=float(score_thr[-1]))
-        score_thr = score_thr[:C].clamp(1e-4, 1 - 1e-4)
-        tau = torch.log(score_thr / (1. - score_thr))
-        pred_class = semantic_logits.argmax(-1)
-        target_class = torch.where(positive, labels, pred_class).clamp(0, C - 1)
-        margin = float(loss_cfg.get('threshold_margin', .1))
-        boundary = tau[target_class]
-        per_point = torch.where(positive, F.softplus(boundary + margin - occ),
-                                F.softplus(occ - boundary + margin))
-        loss_threshold = (per_point * valid.float()).sum() / valid_count
-        loss_voxel = sparse_soft_voxel_iou_loss(
-            semantic_logits, occupancy_logits, points, gt_voxel_semantics,
-            points_mask=points_mask, pc_range=self.pc_range,
-            voxel_size=voxel_size, num_classes=C, class_weights=class_weights)
-        return dict(loss_sem=loss_sem, loss_occ=loss_occ,
-                    loss_threshold=loss_threshold,
-                    loss_soft_voxel=loss_voxel)
+        return future_memory_v2_point_losses(
+            semantic_logits, occupancy_logits, points, points_mask,
+            gt_voxel_semantics, pc_range=self.pc_range,
+            voxel_size=voxel_size,
+            empty_label=int(getattr(self, 'empty_idx', 17)),
+            class_weights=class_weights,
+            score_thresholds=score_thr,
+            positive_radius=loss_cfg.get('positive_radius', None),
+            threshold_margin=float(loss_cfg.get('threshold_margin', 0.1)))
 
     def refine_points(self, points_proposal, points_delta):
         B, Q = points_delta.shape[:2]
@@ -813,19 +744,19 @@ class SparseWorld4DTraj(OPUS):
         new_points = points_proposal + points_delta
         return encode_points(new_points, self.pc_range)
 
-    def _refine_future_memory_points(self, points_proposal, points_delta):
+    def _refine_future_memory_points(self, points_proposal, points_delta,
+                                     active_mask=None):
         """Apply only a Memory point residual in metric coordinates.
 
-        ``refine_points`` is the original OPUS recurrence helper and reduces
-        the proposal to its mean before adding a regression delta.  A
-        correction stream must be identity when its residual is zero, so it
-        keeps every Baseline proposal point and applies only the adapter
-        delta.  Both conversions use the same project coordinate helpers.
+        The shared helper converts only active points and applies the relative
+        encoded change to the original Baseline representation. Thus zero
+        residual, zero gate, or no candidate preserves the input tensor
+        exactly rather than returning a decode/encode round trip.
         """
         B, Q = points_delta.shape[:2]
         points_delta = points_delta.reshape(B, Q, self.num_refines, 3)
-        points_metric = decode_points(points_proposal, self.pc_range)
-        return encode_points(points_metric + points_delta, self.pc_range)
+        return apply_metric_position_residual(
+            points_proposal, points_delta, self.pc_range, active_mask)
 
     def loss_traj(self, pred_traj, gt_traj, ego_interval):
         loss_dict = dict()

@@ -43,6 +43,54 @@ def encode_points_normalized(points_metric, pc_range):
     return out
 
 
+def apply_metric_position_residual(base_points, delta_metric, pc_range,
+                                   active_mask=None):
+    """Apply metric residuals while preserving exact encoded-space identity.
+
+    SparseWorld point proposals use the linear normalisation implemented by
+    decode_points_metric and encode_points_normalized. Only active points are
+    converted. The encoded change is added to the original representation, so
+    a zero metric residual produces an exact zero change and inactive points
+    are returned byte-for-byte.
+    """
+    if base_points.dim() != 4 or base_points.shape[-1] != 3:
+        raise ValueError(
+            'base_points must have shape [B,Q,R,3], got '
+            f'{tuple(base_points.shape)}')
+    if delta_metric.shape != base_points.shape:
+        raise ValueError(
+            'delta_metric must match base_points, got '
+            f'{tuple(delta_metric.shape)} and {tuple(base_points.shape)}')
+    B, Q, R, _ = base_points.shape
+    if active_mask is None:
+        active_mask = torch.ones(
+            B, Q, R, dtype=torch.bool, device=base_points.device)
+    else:
+        active_mask = active_mask.to(
+            device=base_points.device, dtype=torch.bool)
+        if active_mask.shape == (B, Q):
+            active_mask = active_mask.unsqueeze(-1).expand(B, Q, R)
+        if active_mask.shape != (B, Q, R):
+            raise ValueError(
+                'active_mask must have shape [B,Q] or [B,Q,R], got '
+                f'{tuple(active_mask.shape)}')
+    if not bool(active_mask.any()):
+        return base_points
+
+    base_flat = base_points.reshape(-1, 3)
+    delta_flat = delta_metric.reshape(-1, 3)
+    active_flat = active_mask.reshape(-1)
+    encoded_active = base_flat[active_flat]
+    decoded_base = decode_points_metric(encoded_active, pc_range)
+    encoded_base = encode_points_normalized(decoded_base, pc_range)
+    encoded_shifted = encode_points_normalized(
+        decoded_base + delta_flat[active_flat], pc_range)
+    encoded_delta = encoded_shifted - encoded_base
+    output = base_flat.clone()
+    output[active_flat] = encoded_active + encoded_delta
+    return output.reshape_as(base_points)
+
+
 def logits_to_query_confidence(logits):
     """Sigmoid-max-mean confidence for independent semantic logits.
 
@@ -265,6 +313,26 @@ def safe_masked_softmax(scores, mask, dim=-1, eps=_EPS):
     denom = exp_scores.sum(dim=dim, keepdim=True)
     weights = exp_scores / denom.clamp_min(eps)
     weights = torch.where(has_candidate, weights, torch.zeros_like(weights))
+    return weights
+
+
+def prepare_class_weights(class_weights, num_classes, device, dtype):
+    """Convert configured class weights without mutating the configuration.
+
+    All supported sources (list, tuple, CPU Tensor, or CUDA Tensor) take this
+    path before a V2 loss consumes them. Flattening creates the one-dimensional
+    shape required by PyTorch classification losses.
+    """
+    if class_weights is None:
+        return None
+    weights = torch.as_tensor(
+        class_weights, device=device, dtype=dtype).flatten()
+    actual = int(weights.numel())
+    expected = int(num_classes)
+    if actual != expected:
+        raise ValueError(
+            'V2 class_weights has '
+            f'{actual} entries, expected {expected} (num_classes)')
     return weights
 
 
@@ -1676,9 +1744,16 @@ class FutureMemoryAdapterV2(nn.Module):
         self.horizon_embedding = nn.Embedding(3, self.embed_dims)
         self.semantic_query_proj = nn.Linear(self.num_classes, self.embed_dims)
         self.semantic_memory_proj = nn.Linear(self.num_classes, self.embed_dims)
-        # query, point position, context, difference, horizon and six features
+        # Five C-dimensional state features, three num_classes semantic
+        # vectors (P_current, P_memory, and their difference), and ten scalar
+        # diagnostics. Deriving this width here prevents configuration changes
+        # from silently desynchronising the adapter.
+        self.adapter_scalar_dims = 10
+        self.adapter_input_dims = (
+            self.embed_dims * 5 + self.num_classes * 3 +
+            self.adapter_scalar_dims)
         self.adapter = nn.Sequential(
-            nn.Linear(self.embed_dims * 5 + 6, self.embed_dims * 2),
+            nn.Linear(self.adapter_input_dims, self.embed_dims * 2),
             nn.LayerNorm(self.embed_dims * 2), nn.GELU(),
             nn.Linear(self.embed_dims * 2, self.embed_dims),
             nn.LayerNorm(self.embed_dims), nn.GELU())
@@ -1726,10 +1801,23 @@ class FutureMemoryAdapterV2(nn.Module):
             diagnostics=dict(
                 has_candidate=torch.zeros(B, Q, self.num_points,
                                            dtype=torch.bool, device=query_feat.device),
-                candidate_count=torch.zeros(B, Q, self.num_points,
-                                             dtype=torch.long, device=query_feat.device),
+                eligible_point_count=torch.zeros(
+                    B, Q, self.num_points, dtype=torch.long,
+                    device=query_feat.device),
+                selected_point_count=torch.zeros(
+                    B, Q, self.num_points, dtype=torch.long,
+                    device=query_feat.device),
                 coarse_candidate_count=torch.zeros(B, Q, dtype=torch.long,
                                                     device=query_feat.device),
+                coarse_context=z(B, Q, self.embed_dims),
+                point_semantic_current=z(
+                    B, Q, self.num_points, self.num_classes),
+                point_semantic_memory=z(
+                    B, Q, self.num_points, self.num_classes),
+                semantic_difference=z(
+                    B, Q, self.num_points, self.num_classes),
+                semantic_cosine=z(B, Q, self.num_points),
+                semantic_js_divergence=z(B, Q, self.num_points),
                 base_age=z(B, 0), effective_age=z(B, 0),
                 horizon_seconds=float(self.HORIZON_SECONDS[horizon_id]),
                 point_attention_shape=(B, 0, self.num_points, self.num_heads, 0)))
@@ -1816,13 +1904,52 @@ class FutureMemoryAdapterV2(nn.Module):
         margin = top[..., 0] - (top[..., 1] if self.num_classes > 1 else 0.)
         weight = (1. - uncertainty).pow(self.semantic_uncertainty_gamma)
         weight = weight.clamp_min(self.semantic_weight_floor)
+        # Semantic Dropout modifies retrieval conditions only. The original
+        # point-level Baseline probabilities remain P_current.
+        retrieval_probs = probs
+        retrieval_weight = weight
         dropped = torch.zeros_like(weight, dtype=torch.bool)
         if self.training and self.semantic_dropout_probability > 0:
             dropped = torch.rand_like(weight) < self.semantic_dropout_probability
-            probs = torch.where(dropped.unsqueeze(-1),
-                                torch.full_like(probs, 1. / self.num_classes), probs)
-            weight = torch.where(dropped, weight.new_full((), self.semantic_weight_floor), weight)
-        return probs, uncertainty, margin, weight, dropped
+            retrieval_probs = torch.where(
+                dropped.unsqueeze(-1),
+                torch.full_like(probs, 1. / self.num_classes), probs)
+            retrieval_weight = torch.where(
+                dropped, weight.new_full((), self.semantic_weight_floor),
+                weight)
+        return (probs, retrieval_probs, entropy, uncertainty, margin, weight,
+                retrieval_weight, dropped)
+
+    @staticmethod
+    def semantic_disagreement_features(p_current, p_memory, valid):
+        """Build full point-level semantic correction features.
+
+        P_current, P_memory and their difference have shape
+        [B,Q,R,num_classes]. Cosine similarity and JS divergence have shape
+        [B,Q,R]. Disagreement outputs are strict zero where valid is false.
+        """
+        if p_current.shape != p_memory.shape or \
+                valid.shape != p_current.shape[:-1]:
+            raise ValueError(
+                'semantic disagreement expects matching [B,Q,R,C] '
+                'probabilities and a [B,Q,R] valid mask')
+        mask = valid.unsqueeze(-1)
+        memory = torch.where(mask, p_memory, torch.zeros_like(p_memory))
+        difference = torch.where(
+            mask, p_current - memory, torch.zeros_like(p_current))
+        cosine = F.cosine_similarity(
+            p_current, memory, dim=-1, eps=_EPS)
+        midpoint = 0.5 * (p_current + memory)
+        js = 0.5 * (
+            (p_current * (
+                torch.log(p_current.clamp_min(_EPS)) -
+                torch.log(midpoint.clamp_min(_EPS)))).sum(-1) +
+            (memory * (
+                torch.log(memory.clamp_min(_EPS)) -
+                torch.log(midpoint.clamp_min(_EPS)))).sum(-1))
+        cosine = torch.where(valid, cosine, torch.zeros_like(cosine))
+        js = torch.where(valid, js, torch.zeros_like(js))
+        return difference, cosine, js
 
     @staticmethod
     def _union(a, av, b, bv):
@@ -1881,7 +2008,7 @@ class FutureMemoryAdapterV2(nn.Module):
         si = torch.topk(sem_score.masked_fill(~gmask, neg), ks, -1).indices
         gv = torch.gather(gmask, -1, gi); sv = torch.gather(gmask, -1, si)
         ui, uv = self._union(gi, gv, si, sv)
-        return ui, uv, gmask, dist, geom, sem_score, gi, gv, si, sv
+        return ui, uv, gmask, dist, geom, sem_score, gi, gv, si, sv, k
 
     def forward(self, query_feat, query_points_metric, baseline_logits, memory,
                 horizon_id, target_ego2global=None, **kwargs):
@@ -1918,24 +2045,57 @@ class FutureMemoryAdapterV2(nn.Module):
             return self._empty(query_feat, horizon_id)
         hs = float(self.HORIZON_SECONDS[horizon_id])
         h = self.horizon_embedding.weight[horizon_id].to(query_feat).view(1, 1, 1, C).expand(B, Q, self.num_points, C)
-        sem, uncertainty, margin, sem_weight, dropped = self._semantic_features(baseline_logits)
+        (point_semantic, retrieval_semantic, semantic_entropy, uncertainty,
+         margin, semantic_weight, retrieval_semantic_weight,
+         dropped) = self._semantic_features(baseline_logits)
         effective_age = flat['base_age'] + hs
-        coarse_idx, coarse_valid, global_valid, coarse_dist, geom, sem_score, geometry_idx, geometry_valid, semantic_idx, semantic_valid = self._coarse(
-            query_feat, query_points_metric, sem, sem_weight, flat, effective_age,
-            h[:, :, 0, :])
+        (coarse_idx, coarse_valid, global_valid, coarse_dist, geom, sem_score,
+         geometry_idx, geometry_valid,
+         semantic_idx, semantic_valid, coarse_k) = self._coarse(
+            query_feat, query_points_metric, retrieval_semantic,
+            retrieval_semantic_weight, flat, effective_age, h[:, :, 0, :])
         Ku = coarse_idx.shape[-1]; Rm = flat['points'].shape[-2]
         context = query_feat.new_zeros(B, Q, self.num_points, C)
         has = torch.zeros(B, Q, self.num_points, dtype=torch.bool, device=query_feat.device)
-        counts = torch.zeros(B, Q, self.num_points, dtype=torch.long, device=query_feat.device)
-        srel = query_feat.new_zeros(B, Q, self.num_points); sage = srel.clone(); sdist = srel.clone(); disagree = srel.clone()
+        eligible_counts = torch.zeros(
+            B, Q, self.num_points, dtype=torch.long,
+            device=query_feat.device)
+        selected_counts = torch.zeros_like(eligible_counts)
+        srel = query_feat.new_zeros(B, Q, self.num_points)
+        sage = srel.clone()
+        sdist = srel.clone()
+        point_memory_semantic = query_feat.new_zeros(
+            B, Q, self.num_points, self.num_classes)
         max_L = 0
         qbase = self.point_query_proj(self.query_norm(query_feat)).unsqueeze(2)
         qpos = self.current_point_pos(query_points_metric.float()).to(query_feat.dtype)
-        coarse_q = self.query_proj(self.query_norm(query_feat) + h[:, :, 0, :] +
-                                   self.semantic_query_proj(sem.mean(2))).to(query_feat.dtype)
-        coarse_k = self.key_proj(self.memory_norm(flat['feat']))
         coarse_v = self.value_proj(self.memory_norm(flat['feat']))
-        qpoint = qbase + qpos + self.semantic_query_proj(sem.to(self.semantic_query_proj.weight.dtype)).to(query_feat.dtype) + h + coarse_q.unsqueeze(2)
+        # Build one candidate-internal coarse context per current Query. The
+        # original continuous semantic-enhanced score is retained after top-k;
+        # invalid and duplicate union slots get exactly zero probability.
+        batch_index = torch.arange(
+            B, device=query_feat.device)[:, None, None]
+        safe_coarse_idx = coarse_idx.clamp_min(0)
+        selected_coarse_score = torch.gather(
+            sem_score, -1, safe_coarse_idx)
+        coarse_weights = safe_masked_softmax(
+            selected_coarse_score, coarse_valid, dim=-1)
+        selected_coarse_value = coarse_v[batch_index, safe_coarse_idx]
+        coarse_context = (
+            coarse_weights[..., None].to(selected_coarse_value.dtype) *
+            selected_coarse_value).sum(-2).to(query_feat.dtype)
+        coarse_context = coarse_context * coarse_valid.any(-1).unsqueeze(
+            -1).to(coarse_context.dtype)
+
+        # [B,Q,R,C]. Current qpoint conditions point attention, but is not
+        # itself added to the returned historical Point Memory Context.
+        qpoint = (
+            qbase + qpos +
+            self.semantic_query_proj(
+                retrieval_semantic.to(
+                    self.semantic_query_proj.weight.dtype)).to(
+                        query_feat.dtype) +
+            h + coarse_context.unsqueeze(2))
         for start in range(0, Q, self.query_chunk_size):
             stop = min(Q, start + self.query_chunk_size)
             idx = coarse_idx[:, start:stop].clamp_min(0); cv = coarse_valid[:, start:stop]
@@ -1956,14 +2116,20 @@ class FutureMemoryAdapterV2(nn.Module):
             coarse_point_valid = cv.unsqueeze(-1).expand(-1, -1, -1, rm).reshape(B, stop-start, L)
             hvld = hvld & coarse_point_valid
             qv = qpoint[:, start:stop]
-            qk = self.point_query_proj(qv).float().view(B, stop-start, self.num_points, self.num_heads, -1)
+            qk = qv.float().view(
+                B, stop-start, self.num_points, self.num_heads, -1)
             hk = (hk_query + self.point_key_proj(self.memory_norm(hf)) + self.memory_point_pos(hp.float()).to(hf.dtype) + self.semantic_memory_proj(hsx.to(self.semantic_memory_proj.weight.dtype)).to(hf.dtype)).float().view(B, stop-start, L, self.num_heads, -1)
             vv = (hv_query + self.point_value_proj(self.memory_norm(hf)) + self.memory_point_pos(hp.float()).to(hf.dtype)).float().view(B, stop-start, L, self.num_heads, -1)
             score = torch.einsum('bqrhd,bqlhd->bqrhl', qk, hk) / math.sqrt(self.head_dim)
             pd = torch.sqrt(((query_points_metric[:, start:stop, :, None] - hp[:, :, None]) ** 2).sum(-1).clamp_min(0.))
-            compat = torch.einsum('bqrc,bqlc->bqrl', sem[:, start:stop], hsx).clamp_min(_EPS)
-            score = score - pd.square().unsqueeze(-2) / (self.point_radius ** 2 + _EPS) - ha[:, :, None, None, :] / (self.max_effective_age + _EPS) + torch.log(hr.clamp_min(_EPS))[:, :, None, None, :] + sem_weight[:, start:stop].unsqueeze(-1).unsqueeze(-1) * torch.log(compat).unsqueeze(-2)
-            pmask = hvld[:, :, None, :].unsqueeze(-2).expand(-1, -1, self.num_points, self.num_heads, -1) & (pd.unsqueeze(-2) <= self.point_radius)
+            compat = torch.einsum(
+                'bqrc,bqlc->bqrl',
+                retrieval_semantic[:, start:stop], hsx).clamp_min(_EPS)
+            score = score - pd.square().unsqueeze(-2) / (self.point_radius ** 2 + _EPS) - ha[:, :, None, None, :] / (self.max_effective_age + _EPS) + torch.log(hr.clamp_min(_EPS))[:, :, None, None, :] + retrieval_semantic_weight[:, start:stop].unsqueeze(-1).unsqueeze(-1) * torch.log(compat).unsqueeze(-2)
+            eligible_mask = (
+                hvld[:, :, None, :] & (pd <= self.point_radius))
+            pmask = eligible_mask.unsqueeze(-2).expand(
+                -1, -1, -1, self.num_heads, -1)
             pk = min(self.point_topk, L)
             ts, ti = torch.topk(score.masked_fill(~pmask, torch.finfo(score.dtype).min), pk, -1)
             tv = torch.gather(pmask, -1, ti)
@@ -1976,7 +2142,9 @@ class FutureMemoryAdapterV2(nn.Module):
             head_den = head_valid.float().sum(-1).clamp_min(1.)
             context_heads = context_heads * head_valid[..., None].to(context_heads.dtype) / head_den[..., None, None]
             context[:, start:stop] = context_heads.reshape(B, stop-start, self.num_points, C).to(context.dtype)
-            has[:, start:stop] = head_valid.any(-1); counts[:, start:stop] = pmask.any(-2).sum(-1)
+            eligible_counts[:, start:stop] = eligible_mask.sum(-1)
+            selected_counts[:, start:stop] = tv.sum(-1).amax(-1)
+            has[:, start:stop] = selected_counts[:, start:stop] > 0
             sr = torch.gather(hr[:, :, None, None, :].expand(B, stop-start, self.num_points, self.num_heads, L), -1, ti)
             sa = torch.gather(ha[:, :, None, None, :].expand(B, stop-start, self.num_points, self.num_heads, L), -1, ti)
             sd = torch.gather(pd.unsqueeze(-2).expand(B, stop-start, self.num_points, self.num_heads, L), -1, ti)
@@ -1984,27 +2152,60 @@ class FutureMemoryAdapterV2(nn.Module):
             srel[:, start:stop], sage[:, start:stop], sdist[:, start:stop] = self.aggregate_support_statistics(
                 w, tv, sr, sa, sd)
             ss = torch.gather(hsx[:, :, None, None].expand(B, stop-start, self.num_points, self.num_heads, L, self.num_classes), 4, ti[..., None].expand(B, stop-start, self.num_points, self.num_heads, pk, self.num_classes))
-            mean_s = (vw[..., None] * ss).sum(-2) / mass[..., None]; mean_s = (mean_s * head_valid[..., None].to(mean_s.dtype)).sum(-2) / head_den[..., None]; p = sem[:, start:stop]; mm = (p + mean_s).clamp_min(_EPS) / 2
-            js = .5 * ((p * (torch.log(p.clamp_min(_EPS)) - torch.log(mm))).sum(-1) + (mean_s * (torch.log(mean_s.clamp_min(_EPS)) - torch.log(mm))).sum(-1))
-            disagree[:, start:stop] = torch.where(has[:, start:stop], js, torch.zeros_like(js))
-        # Keep the coarse projections on a differentiable path after the
-        # discrete top-k selection.  This gives q/k/v a live second-step
-        # gradient while preserving the strict no-candidate zero mask.
-        coarse_summary = (coarse_k.mean(dim=1) + coarse_v.mean(dim=1)).view(B, 1, 1, C)
-        context = context + qpoint + coarse_summary.to(context.dtype)
+            mean_s = (vw[..., None] * ss).sum(-2) / mass[..., None]
+            mean_s = (
+                mean_s *
+                head_valid[..., None].to(mean_s.dtype)).sum(-2) / (
+                    head_den[..., None])
+            point_memory_semantic[:, start:stop] = torch.where(
+                has[:, start:stop].unsqueeze(-1), mean_s,
+                torch.zeros_like(mean_s)).to(point_memory_semantic.dtype)
+        # Only selected historical point values reach Point Memory Context.
+        # Current qpoint and pooling over all Memory queries are excluded.
         context = self.out_proj(context.to(self.out_proj.weight.dtype)).to(query_feat.dtype) * has.unsqueeze(-1).to(query_feat.dtype)
-        features = torch.stack([counts.float() / float(max(Ku * Rm, 1)), srel, (sage / (self.max_effective_age + _EPS)).clamp(0, 1), (sdist / (self.point_radius + _EPS)).clamp(0, 1), uncertainty, disagree], -1)
+        semantic_difference, semantic_cosine, semantic_js = \
+            self.semantic_disagreement_features(
+                point_semantic, point_memory_semantic, has)
+        # Scalar order: eligible/capacity, selected/point_topk, reliability,
+        # effective age, distance, normalized entropy, margin, semantic weight,
+        # cosine similarity, and JS divergence.
+        scalar_features = torch.stack([
+            eligible_counts.float() / float(max(Ku * Rm, 1)),
+            selected_counts.float() / float(max(self.point_topk, 1)),
+            srel,
+            (sage / (self.max_effective_age + _EPS)).clamp(0, 1),
+            (sdist / (self.point_radius + _EPS)).clamp(0, 1),
+            uncertainty,
+            margin,
+            semantic_weight,
+            semantic_cosine,
+            semantic_js,
+        ], -1).to(query_feat.dtype)
         qexpanded = query_feat.unsqueeze(2).expand(-1, -1, self.num_points, -1)
-        adapted = self.adapter(torch.cat([qexpanded, qpos, context, qexpanded - context, h, features], -1))
+        adapter_input = torch.cat([
+            qexpanded, qpos, context, qexpanded - context, h,
+            point_semantic.to(query_feat.dtype),
+            point_memory_semantic.to(query_feat.dtype),
+            semantic_difference.to(query_feat.dtype), scalar_features], -1)
+        if adapter_input.shape[-1] != self.adapter_input_dims:
+            raise RuntimeError(
+                'FutureMemoryAdapterV2 adapter input has '
+                f'{adapter_input.shape[-1]} features, expected '
+                f'{self.adapter_input_dims}')
+        adapted = self.adapter(adapter_input)
         delta_s, delta_o, delta_p = self.delta_s_head(adapted), self.delta_o_head(adapted), self.delta_p_head(adapted)
         point_mask = has.unsqueeze(-1).to(adapted.dtype)
         delta_s = delta_s * point_mask
         delta_o = delta_o * point_mask
         delta_p = delta_p * point_mask
         gate = torch.sigmoid(self.gate_head(adapted)) * point_mask
-        diagnostics = dict(has_candidate=has, candidate_count=counts,
+        diagnostics = dict(has_candidate=has,
+                           eligible_point_count=eligible_counts.detach(),
+                           selected_point_count=selected_counts.detach(),
                            coarse_candidate_count=coarse_valid.sum(-1),
                            coarse_indices=coarse_idx.detach(), coarse_valid=coarse_valid.detach(),
+                           coarse_attention_weights=coarse_weights.detach(),
+                           coarse_context=coarse_context.detach(),
                            geometry_indices=geometry_idx.detach(), geometry_valid=geometry_valid.detach(),
                            semantic_indices=semantic_idx.detach(), semantic_valid=semantic_valid.detach(),
                            geometry_candidate_count=global_valid.sum(-1),
@@ -2012,9 +2213,19 @@ class FutureMemoryAdapterV2(nn.Module):
                            support_distance=sdist.detach(), average_distance=sdist.detach(),
                            base_age=flat['base_age'].detach(), effective_age=effective_age.detach(),
                            time_penalty=(effective_age / (self.max_effective_age + _EPS)).detach(),
-                           horizon_seconds=hs, semantic_uncertainty=uncertainty.detach(),
-                           semantic_margin=margin.detach(), semantic_weight=sem_weight.detach(),
-                           semantic_dropout_mask=dropped.detach(), semantic_disagreement=disagree.detach(),
+                           horizon_seconds=hs,
+                           semantic_entropy=semantic_entropy.detach(),
+                           semantic_uncertainty=uncertainty.detach(),
+                           semantic_margin=margin.detach(),
+                           semantic_weight=semantic_weight.detach(),
+                           retrieval_semantic_weight=retrieval_semantic_weight.detach(),
+                           semantic_dropout_mask=dropped.detach(),
+                           point_semantic_current=point_semantic.detach(),
+                           point_semantic_memory=point_memory_semantic.detach(),
+                           semantic_difference=semantic_difference.detach(),
+                           semantic_cosine=semantic_cosine.detach(),
+                           semantic_js_divergence=semantic_js.detach(),
+                           semantic_disagreement=semantic_js.detach(),
                            coarse_score_shape=tuple(geom.shape), point_attention_shape=(B, min(self.query_chunk_size, Q), self.num_points, self.num_heads, max_L),
                            attention_shape=(B, min(self.query_chunk_size, Q), self.num_points, self.num_heads, max_L))
         diagnostics['point_context'] = context
@@ -2047,8 +2258,11 @@ def sparse_soft_voxel_iou_loss(semantic_logits, occupancy_logits, points,
     vs = torch.as_tensor(voxel_size, device=device, dtype=torch.float32)
     grid = torch.as_tensor(gt_voxel_semantics.shape[1:4], device=device, dtype=torch.long)
     offsets = torch.tensor([[i, j, k] for i in (0, 1) for j in (0, 1) for k in (0, 1)], device=device)
-    weights_cls = (torch.ones(num_classes, device=device, dtype=dtype)
-                   if class_weights is None else torch.as_tensor(class_weights, device=device, dtype=dtype))
+    weights_cls = prepare_class_weights(
+        class_weights, num_classes, device, dtype)
+    if weights_cls is None:
+        weights_cls = torch.ones(
+            num_classes, device=device, dtype=dtype)
     total = semantic_logits.new_zeros(())
     for b in range(B):
         gt = gt_voxel_semantics[b].long()
@@ -2092,3 +2306,165 @@ def sparse_soft_voxel_iou_loss(semantic_logits, occupancy_logits, points,
         den = pred_vox.sum(0) + target.sum(0) - inter
         total = total + (weights_cls * (1. - inter / den.clamp_min(eps))).sum() / weights_cls.sum().clamp_min(eps)
     return total / max(B, 1)
+
+
+def future_memory_v2_point_losses(
+        semantic_logits, occupancy_logits, points, points_mask,
+        gt_voxel_semantics, pc_range, voxel_size=(0.4, 0.4, 0.4),
+        empty_label=17, class_weights=None, score_thresholds=0.1,
+        positive_radius=None, threshold_margin=0.1):
+    """Compute V2 point and sparse-voxel losses without model state.
+
+    This is the implementation used by SparseWorld4DTraj. Keeping it as a pure
+    function makes list/tuple/Tensor class-weight handling and empty-input
+    safety directly testable without importing optional CUDA extensions.
+    """
+    expected_occupancy_shape = semantic_logits.shape[:-1] + (1,)
+    if (semantic_logits.dim() != 4 or
+            occupancy_logits.shape != expected_occupancy_shape):
+        raise ValueError(
+            'semantic_logits and occupancy_logits must be [B,Q,R,C] and '
+            '[B,Q,R,1]')
+    B, Q, R, C = semantic_logits.shape
+    if points.shape != (B, Q, R, 3):
+        raise ValueError(
+            'points must have shape [B,Q,R,3], got '
+            f'{tuple(points.shape)}')
+    device = semantic_logits.device
+    dtype = semantic_logits.dtype
+    if points_mask is None:
+        points_mask = torch.ones(
+            B, Q, R, dtype=torch.bool, device=device)
+    else:
+        points_mask = points_mask.to(device=device, dtype=torch.bool)
+        if points_mask.shape != (B, Q, R):
+            raise ValueError(
+                'points_mask must have shape [B,Q,R], got '
+                f'{tuple(points_mask.shape)}')
+    gt_tensor = torch.as_tensor(
+        gt_voxel_semantics, device=device, dtype=torch.long)
+    if gt_tensor.dim() != 4 or gt_tensor.shape[0] != B:
+        raise ValueError(
+            'gt_voxel_semantics must have shape [B,X,Y,Z], got '
+            f'{tuple(gt_tensor.shape)}')
+
+    metric = decode_points_metric(points, pc_range).float()
+    origin = torch.as_tensor(
+        pc_range[:3], device=device, dtype=torch.float32)
+    voxel_size = torch.as_tensor(
+        voxel_size, device=device, dtype=torch.float32).flatten()
+    if voxel_size.numel() != 3 or (voxel_size <= 0).any():
+        raise ValueError('voxel_size must contain three positive values')
+    grid = torch.as_tensor(
+        gt_tensor.shape[1:4], device=device, dtype=torch.long)
+    index = torch.floor((metric - origin) / voxel_size).long()
+    inside = ((index >= 0) & (index < grid)).all(-1)
+    safe = index.clamp_min(0)
+    for dim in range(3):
+        safe[..., dim] = safe[..., dim].clamp_max(grid[dim] - 1)
+    batch = torch.arange(
+        B, device=device)[:, None, None].expand(B, Q, R)
+    labels = gt_tensor[
+        batch, safe[..., 0], safe[..., 1], safe[..., 2]]
+    radius = (
+        float(voxel_size.max().item()) * 0.5
+        if positive_radius is None else float(positive_radius))
+    valid = points_mask & inside & torch.isfinite(metric).all(-1)
+
+    nearest_dist = torch.full(
+        (B, Q, R), float('inf'), device=device)
+    nearest_label = torch.zeros(
+        (B, Q, R), dtype=torch.long, device=device)
+    for b in range(B):
+        gt_idx = torch.nonzero(
+            gt_tensor[b] != int(empty_label), as_tuple=False)
+        if gt_idx.numel() == 0:
+            continue
+        gt_centres = (
+            (gt_idx.float() + 0.5) * voxel_size + origin)
+        gt_labels = gt_tensor[b][
+            gt_idx[:, 0], gt_idx[:, 1], gt_idx[:, 2]]
+        pred_flat = metric[b].reshape(-1, 3)
+        near = torch.full(
+            (pred_flat.shape[0],), float('inf'), device=device)
+        near_idx = torch.zeros(
+            pred_flat.shape[0], dtype=torch.long, device=device)
+        # Both axes are chunked; no point-by-all-GT matrix is retained.
+        for point_start in range(0, pred_flat.shape[0], 2048):
+            point_stop = min(
+                pred_flat.shape[0], point_start + 2048)
+            local_dist = torch.full(
+                (point_stop - point_start,), float('inf'),
+                device=device)
+            local_idx = torch.zeros(
+                point_stop - point_start, dtype=torch.long,
+                device=device)
+            for gt_start in range(0, gt_centres.shape[0], 8192):
+                gt_stop = min(
+                    gt_centres.shape[0], gt_start + 8192)
+                distance = torch.cdist(
+                    pred_flat[point_start:point_stop],
+                    gt_centres[gt_start:gt_stop])
+                distance_min, distance_idx = distance.min(-1)
+                update = distance_min < local_dist
+                local_dist = torch.where(
+                    update, distance_min, local_dist)
+                local_idx = torch.where(
+                    update, distance_idx + gt_start, local_idx)
+            near[point_start:point_stop] = local_dist
+            near_idx[point_start:point_stop] = local_idx
+        nearest_dist[b] = near.reshape(Q, R)
+        nearest_label[b] = gt_labels[near_idx].reshape(Q, R)
+
+    positive = valid & (nearest_dist <= radius)
+    labels = torch.where(positive, nearest_label, labels)
+    occupancy_target = positive.to(dtype)
+    occupancy = occupancy_logits.squeeze(-1)
+    valid_count = valid.to(dtype).sum().clamp_min(1.)
+    loss_occ = (
+        F.binary_cross_entropy_with_logits(
+            occupancy, occupancy_target, reduction='none') *
+        valid.to(dtype)).sum() / valid_count
+
+    converted_weights = prepare_class_weights(
+        class_weights, C, device, dtype)
+    if positive.any():
+        loss_sem = F.cross_entropy(
+            semantic_logits.reshape(-1, C)[positive.reshape(-1)],
+            labels.reshape(-1)[positive.reshape(-1)].clamp(0, C - 1),
+            weight=converted_weights)
+    else:
+        loss_sem = semantic_logits.sum() * 0.
+
+    score_thresholds = torch.as_tensor(
+        score_thresholds, device=device, dtype=dtype).flatten()
+    if score_thresholds.numel() == 0:
+        raise ValueError('score_thresholds cannot be empty')
+    if score_thresholds.numel() == 1:
+        score_thresholds = score_thresholds.expand(C)
+    if score_thresholds.numel() < C:
+        score_thresholds = F.pad(
+            score_thresholds, (0, C - score_thresholds.numel()),
+            value=float(score_thresholds[-1]))
+    score_thresholds = score_thresholds[:C].clamp(1e-4, 1 - 1e-4)
+    threshold_logits = torch.log(
+        score_thresholds / (1. - score_thresholds))
+    predicted_class = semantic_logits.argmax(-1)
+    target_class = torch.where(
+        positive, labels, predicted_class).clamp(0, C - 1)
+    boundary = threshold_logits[target_class]
+    per_point_threshold = torch.where(
+        positive,
+        F.softplus(boundary + float(threshold_margin) - occupancy),
+        F.softplus(occupancy - boundary + float(threshold_margin)))
+    loss_threshold = (
+        per_point_threshold * valid.to(dtype)).sum() / valid_count
+    loss_voxel = sparse_soft_voxel_iou_loss(
+        semantic_logits, occupancy_logits, points, gt_tensor,
+        points_mask=points_mask, pc_range=pc_range,
+        voxel_size=voxel_size, num_classes=C,
+        class_weights=converted_weights)
+    return dict(
+        loss_sem=loss_sem, loss_occ=loss_occ,
+        loss_threshold=loss_threshold,
+        loss_soft_voxel=loss_voxel)
