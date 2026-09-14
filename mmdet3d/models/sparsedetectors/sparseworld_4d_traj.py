@@ -21,7 +21,8 @@ from IPython import embed
 from mmdet3d.models.sparsedetectors.bbox.utils import decode_points, encode_points, trans_coords,get_matched_inds
 from mmdet3d.models.sparsedetectors.query_memory import (
     STACQueryMemory, QueryMemoryBank, decode_points_metric,
-    logits_to_query_confidence, FutureMemoryAdapter
+    logits_to_query_confidence, FutureMemoryAdapter, FutureMemoryAdapterV2,
+    decode_semantic_occupancy_logits, sparse_soft_voxel_iou_loss
 )
 from mmdet3d.models.heads import DownScaleModule3DCustom
 from mmdet3d.core.bbox import Box3DMode, Coord3DMode, LiDARInstance3DBoxes
@@ -137,6 +138,8 @@ class SparseWorld4DTraj(OPUS):
     # Every original OPUS/image/trajectory parameter is frozen in this mode.
     _FUTURE_MEMORY_TRAINABLE_PREFIXES = ('future_memory_adapter.',)
     _FUTURE_MEMORY_TRAIN_MODULES = ('future_memory_adapter',)
+    _FUTURE_MEMORY_V2_TRAINABLE_PREFIXES = ('future_memory_adapter_v2.',)
+    _FUTURE_MEMORY_V2_TRAIN_MODULES = ('future_memory_adapter_v2',)
 
     def __init__(self,
                  out_dim=32,
@@ -164,6 +167,7 @@ class SparseWorld4DTraj(OPUS):
                  memory_lambda_time=0.1,
                  memory_lambda_conf=0.5,
                  query_memory_cfg=None,
+                 future_memory_adapter_version=None,
                  **kwargs):
         self.memory_self_noise = kwargs.pop('memory_self_noise', 0.0)
         super(SparseWorld4DTraj, self).__init__(**kwargs)
@@ -280,6 +284,9 @@ class SparseWorld4DTraj(OPUS):
         )
         self.query_memory_cfg = self._build_query_memory_cfg(
             query_memory_cfg, legacy_memory_cfg)
+        if future_memory_adapter_version is not None:
+            self.query_memory_cfg['future_memory_adapter_version'] = str(
+                future_memory_adapter_version)
         memory_ablation = self.query_memory_cfg.get(
             'memory_ablation_memory_enabled', None)
         refiner_ablation = self.query_memory_cfg.get(
@@ -307,10 +314,20 @@ class SparseWorld4DTraj(OPUS):
             self.query_memory_cfg.get('memory_phase3_finetune_mode', False))
         future_adapter_cfg = self.query_memory_cfg.get(
             'future_memory_adapter', None)
+        future_adapter_v2_cfg = self.query_memory_cfg.get(
+            'future_memory_adapter_v2', None)
+        self.future_memory_adapter_version = str(
+            self.query_memory_cfg.get(
+                'future_memory_adapter_version',
+                'v2' if future_adapter_v2_cfg is not None else 'v1')).lower()
+        selected_future_cfg = (future_adapter_v2_cfg
+                               if self.future_memory_adapter_version == 'v2'
+                               and future_adapter_v2_cfg is not None
+                               else future_adapter_cfg)
         self.future_memory_adapter_enabled = bool(
             self.query_memory_cfg.get('future_memory_adapter_enabled', False)
-            if future_adapter_cfg is None else
-            future_adapter_cfg.get('enabled', False))
+            if selected_future_cfg is None else
+            selected_future_cfg.get('enabled', False))
         self.future_memory_adapter_finetune_mode = bool(
             self.query_memory_cfg.get('future_memory_adapter_finetune_mode',
                                       self.future_memory_adapter_enabled))
@@ -361,6 +378,8 @@ class SparseWorld4DTraj(OPUS):
         self.frozen_ind_stamps_all = None
         self._frozen_rap_masks = None
         self.future_memory_adapter = None
+        self.future_memory_adapter_v2 = None
+        self.future_memory_v2_loss_cfg = {}
         query_embed_dims = int(self.pts_bbox_head.transformer.embed_dims)
         if self.query_memory_module_enabled:
             if self.query_memory_source not in ('cache', 'online'):
@@ -422,13 +441,28 @@ class SparseWorld4DTraj(OPUS):
         # legacy MemoryConditionedRefiner.  It is an independent output-only
         # correction stream and is instantiated only by the dedicated config.
         if getattr(self, 'future_memory_adapter_enabled', False):
-            adapter_cfg = dict(future_adapter_cfg or {})
-            adapter_cfg.pop('enabled', None)
-            adapter_cfg.setdefault('embed_dims', query_embed_dims)
-            adapter_cfg.setdefault('num_classes', 17)
-            adapter_cfg.setdefault('num_points', self.num_refines)
-            adapter_cfg.setdefault('pc_range', self.pc_range)
-            self.future_memory_adapter = FutureMemoryAdapter(**adapter_cfg)
+            if self.future_memory_adapter_version == 'v2':
+                adapter_cfg = dict(future_adapter_v2_cfg or future_adapter_cfg or {})
+                adapter_cfg.pop('enabled', None)
+                self.future_memory_v2_loss_cfg = {
+                    key: adapter_cfg.get(key) for key in (
+                        'loss_occ_weight', 'loss_sem_weight',
+                        'loss_threshold_weight', 'loss_soft_voxel_weight',
+                        'loss_base_cls_weight', 'loss_pts_weight', 'threshold_margin',
+                        'positive_radius') if key in adapter_cfg}
+                adapter_cfg.setdefault('embed_dims', query_embed_dims)
+                adapter_cfg.setdefault('num_classes', 17)
+                adapter_cfg.setdefault('num_points', self.num_refines)
+                adapter_cfg.setdefault('pc_range', self.pc_range)
+                self.future_memory_adapter_v2 = FutureMemoryAdapterV2(**adapter_cfg)
+            else:
+                adapter_cfg = dict(future_adapter_cfg or {})
+                adapter_cfg.pop('enabled', None)
+                adapter_cfg.setdefault('embed_dims', query_embed_dims)
+                adapter_cfg.setdefault('num_classes', 17)
+                adapter_cfg.setdefault('num_points', self.num_refines)
+                adapter_cfg.setdefault('pc_range', self.pc_range)
+                self.future_memory_adapter = FutureMemoryAdapter(**adapter_cfg)
 
         self.memory_refiner = MemoryConditionedRefiner(query_embed_dims)
         self.memory_horizon_embedding = nn.Embedding(
@@ -520,6 +554,8 @@ class SparseWorld4DTraj(OPUS):
         adapter_diagnostics = []
         base_cls_list = []
         base_points_list = []
+        forecast_semantic_logits_list = []
+        forecast_occupancy_logits_list = []
 
         target_ego2global = None
         if memory_context is not None and \
@@ -530,6 +566,9 @@ class SparseWorld4DTraj(OPUS):
         # The six OPUS internal states are 0.5, 1.0, ..., 3.0 s.  Only state
         # indices 1, 3, and 5 (1/2/3 s) receive the new adapter.
         target_horizons = {1: (0, '1'), 3: (1, '2'), 5: (2, '3')}
+        adapter_is_v2 = getattr(self, 'future_memory_adapter_version', 'v1') == 'v2'
+        adapter_module = (self.future_memory_adapter_v2
+                          if adapter_is_v2 else self.future_memory_adapter)
         for interval in range(self.num_fu_frames):
             # Baseline trajectory/state update.  Inputs are intentionally
             # detached exactly as in the original OPUS recurrence.
@@ -575,17 +614,27 @@ class SparseWorld4DTraj(OPUS):
             if interval in target_horizons:
                 horizon_id, horizon_name = target_horizons[interval]
                 if memory_context is None:
-                    result = self.future_memory_adapter(
+                    result = adapter_module(
                         state_feat, decode_points_metric(state_pos, self.pc_range),
                         base_cls_snapshot, None, horizon_id)
                 else:
-                    result = self.future_memory_adapter(
+                    result = adapter_module(
                         state_feat, decode_points_metric(state_pos, self.pc_range),
                         base_cls_snapshot, memory_context, horizon_id,
                         target_ego2global=target_ego2global)
                 gate = result['gate']
-                output_cls = base_cls_snapshot + gate[..., None] * (
-                    result['delta_s'] + result['delta_o'])
+                if adapter_is_v2:
+                    # Keep semantic ordering and occupancy thresholding as
+                    # separate quantities, then adapt to the legacy decoder.
+                    sem_logits, occ_logits, output_cls = \
+                        decode_semantic_occupancy_logits(
+                            base_cls_snapshot, result['delta_s'],
+                            result['delta_o'], gate)
+                else:
+                    sem_logits = base_cls_snapshot + gate[..., None] * result['delta_s']
+                    occ_logits = base_cls_snapshot.max(-1, keepdim=True).values + gate[..., None] * result['delta_o']
+                    output_cls = base_cls_snapshot + gate[..., None] * (
+                        result['delta_s'] + result['delta_o'])
                 # The historical ``refine_points`` helper intentionally
                 # averages proposal points before applying a Baseline
                 # regression update.  Reusing that averaging operation for a
@@ -596,13 +645,27 @@ class SparseWorld4DTraj(OPUS):
                 # gated Memory delta, then encode back without another mean.
                 output_pos = self._refine_future_memory_points(
                     base_pos_snapshot,
-                    (gate[..., None] * result['delta_p']).flatten(2, 3))
+                    (gate * result['delta_p'] if adapter_is_v2 else
+                     gate[..., None] * result['delta_p']).flatten(2, 3))
                 diag = dict(result.get('diagnostics', {}))
                 diag.update(enabled=True, internal_step=int(interval + 1),
                             horizon_id=int(horizon_id),
                             horizon_name=horizon_name,
                             query_count=int(state_feat.shape[1]))
+                if adapter_is_v2:
+                    diag['semantic_logits'] = sem_logits.detach()
+                    diag['occupancy_logits'] = occ_logits.detach()
             forecast_semantics_list.append(output_cls)
+            if adapter_is_v2:
+                # The lists are consumed by V2 losses; non-target steps use
+                # the unmodified baseline values.
+                if interval not in target_horizons:
+                    forecast_semantic_logits_list.append(base_cls_snapshot)
+                    forecast_occupancy_logits_list.append(
+                        base_cls_snapshot.max(-1, keepdim=True).values)
+                else:
+                    forecast_semantic_logits_list.append(sem_logits)
+                    forecast_occupancy_logits_list.append(occ_logits)
             forecast_points_list.append(output_pos)
             base_cls_list.append(base_cls_snapshot)
             base_points_list.append(base_pos_snapshot)
@@ -635,7 +698,111 @@ class SparseWorld4DTraj(OPUS):
             base_refine_pts=query_pos[:, current_mask],
             baseline_forecast_semantics_list=base_cls_list,
             baseline_forecast_points_list=base_points_list)
+        if adapter_is_v2:
+            outputs['forecast_semantic_logits_list'] = forecast_semantic_logits_list
+            outputs['forecast_occupancy_logits_list'] = forecast_occupancy_logits_list
         return outputs
+
+    def _future_memory_v2_losses(self, semantic_logits, occupancy_logits,
+                                  points, points_mask, gt_voxel_semantics):
+        """Compute point occupancy/semantic and sparse voxel losses."""
+        B, Q, R, C = semantic_logits.shape
+        device = semantic_logits.device
+        points_mask = (torch.ones(B, Q, R, dtype=torch.bool, device=device)
+                       if points_mask is None else points_mask.to(device).bool())
+        metric = decode_points_metric(points, self.pc_range).float()
+        origin = self.pc_range[:3].to(device=device, dtype=torch.float32)
+        voxel_size = getattr(self.pts_bbox_head, 'voxel_size',
+                             torch.tensor([0.4, 0.4, 0.4], device=device))
+        voxel_size = voxel_size.to(device=device, dtype=torch.float32)
+        grid = torch.as_tensor(gt_voxel_semantics.shape[1:4], device=device)
+        index = torch.floor((metric - origin) / voxel_size).long()
+        inside = ((index >= 0) & (index < grid)).all(-1)
+        safe = index.clamp_min(0)
+        for dim in range(3):
+            safe[..., dim] = safe[..., dim].clamp_max(grid[dim] - 1)
+        batch = torch.arange(B, device=device)[:, None, None].expand(B, Q, R)
+        gt_tensor = gt_voxel_semantics.to(device=device).long()
+        labels = gt_tensor[batch, safe[..., 0], safe[..., 1], safe[..., 2]]
+        centres = (safe.float() + 0.5) * voxel_size + origin
+        loss_cfg = getattr(self, 'future_memory_v2_loss_cfg', {})
+        radius = float(loss_cfg.get(
+            'positive_radius', float(voxel_size.max().item()) * 0.5))
+        valid = points_mask & inside & torch.isfinite(metric).all(-1)
+        # Occupancy target follows the evaluator notion: nearest non-empty GT
+        # voxel centre, rather than merely the GT label at the predicted voxel.
+        nearest_dist = torch.full((B, Q, R), float('inf'), device=device)
+        nearest_label = torch.zeros((B, Q, R), dtype=torch.long, device=device)
+        empty_label = int(getattr(self, 'empty_idx', 17))
+        for b in range(B):
+            gt_idx = torch.nonzero(gt_tensor[b] != empty_label, as_tuple=False)
+            if gt_idx.numel() == 0:
+                continue
+            gt_centres = (gt_idx.float() + 0.5) * voxel_size + origin
+            gt_labels = gt_tensor[b][gt_idx[:, 0], gt_idx[:, 1], gt_idx[:, 2]]
+            pred_flat = metric[b].reshape(-1, 3)
+            near = torch.full((pred_flat.shape[0],), float('inf'), device=device)
+            near_idx = torch.zeros(pred_flat.shape[0], dtype=torch.long, device=device)
+            # Chunk both axes: no point×all-GT distance matrix is retained.
+            for ps in range(0, pred_flat.shape[0], 2048):
+                pe = min(pred_flat.shape[0], ps + 2048)
+                local_dist = torch.full((pe - ps,), float('inf'), device=device)
+                local_idx = torch.zeros(pe - ps, dtype=torch.long, device=device)
+                for gs in range(0, gt_centres.shape[0], 8192):
+                    ge = min(gt_centres.shape[0], gs + 8192)
+                    d = torch.cdist(pred_flat[ps:pe], gt_centres[gs:ge])
+                    dmin, didx = d.min(-1)
+                    update = dmin < local_dist
+                    local_dist = torch.where(update, dmin, local_dist)
+                    local_idx = torch.where(update, didx + gs, local_idx)
+                near[ps:pe] = local_dist
+                near_idx[ps:pe] = local_idx
+            nearest_dist[b] = near.reshape(Q, R)
+            nearest_label[b] = gt_labels[near_idx].reshape(Q, R)
+        positive = valid & (nearest_dist <= radius)
+        labels = torch.where(positive, nearest_label, labels)
+        y_occ = positive.float()
+        occ = occupancy_logits.squeeze(-1)
+        valid_count = valid.float().sum().clamp_min(1.)
+        loss_occ = (F.binary_cross_entropy_with_logits(
+            occ, y_occ, reduction='none') * valid.float()).sum() / valid_count
+        configured_weights = getattr(self.pts_bbox_head, 'train_cfg', {}).get(
+            'cls_weights', None)
+        class_weights = (configured_weights if configured_weights is not None
+                         else getattr(self, 'class_weights', None))
+        if class_weights is not None:
+            class_weights = class_weights.to(device=device,
+                                              dtype=semantic_logits.dtype)
+        if positive.any():
+            loss_sem = F.cross_entropy(semantic_logits.reshape(-1, C)[positive.reshape(-1)],
+                                       labels.reshape(-1)[positive.reshape(-1)].clamp(0, C - 1),
+                                       weight=class_weights)
+        else:
+            loss_sem = semantic_logits.sum() * 0.
+        score_thr = self.pts_bbox_head.test_cfg.get('score_thr', 0.1)
+        score_thr = torch.as_tensor(score_thr, device=device,
+                                    dtype=semantic_logits.dtype).flatten()
+        if score_thr.numel() == 1:
+            score_thr = score_thr.expand(C)
+        if score_thr.numel() < C:
+            score_thr = F.pad(score_thr, (0, C - score_thr.numel()),
+                              value=float(score_thr[-1]))
+        score_thr = score_thr[:C].clamp(1e-4, 1 - 1e-4)
+        tau = torch.log(score_thr / (1. - score_thr))
+        pred_class = semantic_logits.argmax(-1)
+        target_class = torch.where(positive, labels, pred_class).clamp(0, C - 1)
+        margin = float(loss_cfg.get('threshold_margin', .1))
+        boundary = tau[target_class]
+        per_point = torch.where(positive, F.softplus(boundary + margin - occ),
+                                F.softplus(occ - boundary + margin))
+        loss_threshold = (per_point * valid.float()).sum() / valid_count
+        loss_voxel = sparse_soft_voxel_iou_loss(
+            semantic_logits, occupancy_logits, points, gt_voxel_semantics,
+            points_mask=points_mask, pc_range=self.pc_range,
+            voxel_size=voxel_size, num_classes=C, class_weights=class_weights)
+        return dict(loss_sem=loss_sem, loss_occ=loss_occ,
+                    loss_threshold=loss_threshold,
+                    loss_soft_voxel=loss_voxel)
 
     def refine_points(self, points_proposal, points_delta):
         B, Q = points_delta.shape[:2]
@@ -790,6 +957,8 @@ class SparseWorld4DTraj(OPUS):
 
     def memory_tuning_trainable_prefixes(self):
         if getattr(self, 'future_memory_adapter_finetune_mode', False):
+            if getattr(self, 'future_memory_adapter_version', 'v1') == 'v2':
+                return self._FUTURE_MEMORY_V2_TRAINABLE_PREFIXES
             return self._FUTURE_MEMORY_TRAINABLE_PREFIXES
         if getattr(self, 'memory_phase3_finetune_mode', False):
             prefixes = []
@@ -815,6 +984,8 @@ class SparseWorld4DTraj(OPUS):
 
     def memory_tuning_train_modules(self):
         if getattr(self, 'future_memory_adapter_finetune_mode', False):
+            if getattr(self, 'future_memory_adapter_version', 'v1') == 'v2':
+                return self._FUTURE_MEMORY_V2_TRAIN_MODULES
             return self._FUTURE_MEMORY_TRAIN_MODULES
         if getattr(self, 'memory_phase3_finetune_mode', False):
             modules = []
@@ -871,8 +1042,11 @@ class SparseWorld4DTraj(OPUS):
             else:
                 mode_name = 'memory_finetune_mode'
             if (getattr(self, 'future_memory_adapter_finetune_mode', False)):
-                if not self.future_memory_adapter_enabled or \
-                        self.future_memory_adapter is None:
+                adapter_present = (
+                    self.future_memory_adapter_v2 is not None
+                    if getattr(self, 'future_memory_adapter_version', 'v1') == 'v2'
+                    else self.future_memory_adapter is not None)
+                if not self.future_memory_adapter_enabled or not adapter_present:
                     raise ValueError(
                         'future_memory_adapter_finetune_mode=True requires '
                         'an enabled FutureMemoryAdapter')
@@ -1751,15 +1925,31 @@ class SparseWorld4DTraj(OPUS):
                     raise RuntimeError(
                         f'FutureMemoryAdapter requires temporal step '
                         f'{step_index + 1} for mem_{horizon_name} loss')
+                raw_semantic = (outputs['forecast_semantic_logits_list'][step_index]
+                                if self.future_memory_adapter_version == 'v2'
+                                else forecast_semantics_list[step_index])
                 raw = self.pts_bbox_head.loss_future(
                     [voxel_semantics_temporal[step_index]],
                     [forecast_points_list[step_index]],
-                    [forecast_semantics_list[step_index]],
+                    [raw_semantic],
                     [forecast_points_mask_list[step_index]])
-                losses[f'mem_{horizon_name}.loss_cls'] = raw[
-                    'fu1.loss_cls']
-                losses[f'mem_{horizon_name}.loss_pts'] = raw[
-                    'fu1.loss_pts']
+                if self.future_memory_adapter_version == 'v2':
+                    v2 = self._future_memory_v2_losses(
+                        outputs['forecast_semantic_logits_list'][step_index],
+                        outputs['forecast_occupancy_logits_list'][step_index],
+                        forecast_points_list[step_index],
+                        forecast_points_mask_list[step_index],
+                        voxel_semantics_temporal[step_index])
+                    cfg = self.future_memory_v2_loss_cfg
+                    losses[f'mem_{horizon_name}.loss_base_cls'] = raw['fu1.loss_cls'] * float(cfg.get('loss_base_cls_weight', 1.0))
+                    losses[f'mem_{horizon_name}.loss_sem'] = v2['loss_sem'] * float(cfg.get('loss_sem_weight', 0.25))
+                    losses[f'mem_{horizon_name}.loss_occ'] = v2['loss_occ'] * float(cfg.get('loss_occ_weight', 0.25))
+                    losses[f'mem_{horizon_name}.loss_threshold'] = v2['loss_threshold'] * float(cfg.get('loss_threshold_weight', 0.1))
+                    losses[f'mem_{horizon_name}.loss_soft_voxel'] = v2['loss_soft_voxel'] * float(cfg.get('loss_soft_voxel_weight', 0.1))
+                    losses[f'mem_{horizon_name}.loss_pts'] = raw['fu1.loss_pts'] * float(cfg.get('loss_pts_weight', 0.5))
+                else:
+                    losses[f'mem_{horizon_name}.loss_cls'] = raw['fu1.loss_cls']
+                    losses[f'mem_{horizon_name}.loss_pts'] = raw['fu1.loss_pts']
         else:
             losses.update(
                 self.pts_bbox_head.loss_future(
