@@ -25,3 +25,21 @@ tf_logs
 stp3_val
 AD-MLP/
 OccWorldCode/
+
+# Local datasets, caches, checkpoints, and experiment artifacts
+cache_samples/
+*.pt
+*.pth
+*.pkl
+*.npz
+*.npy
+*.bin
+*.pcd
+*.jpg
+*.jpeg
+*.h5
+*.so
+logs/
+*.egg-info/
+__pycache__/
+.pytest_cache/
