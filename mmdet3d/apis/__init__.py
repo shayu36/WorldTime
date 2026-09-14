@@ -3,7 +3,8 @@ from .inference import (convert_SyncBN, inference_detector,
                         inference_mono_3d_detector,
                         inference_multi_modality_detector, inference_segmentor,
                         init_model, show_result_meshlab)
-from .test import single_gpu_test, multi_gpu_test, multi_gpu_test_temporal, multi_gpu_test_traj
+from .sparseworld_test import multi_gpu_test, single_gpu_test
+from .test import multi_gpu_test_temporal, multi_gpu_test_traj
 from .train import init_random_seed, train_model
 
 __all__ = [

@@ -86,6 +86,9 @@ class OPUSHead(BaseModule):
         self.pc_range_new = torch.tensor([-80, -60, -3, 80, 60, 6.6]).cuda()
         self.voxel_num_new = torch.tensor([400,300,24]).cuda()
         self.register_buffer("num_stamps_all", torch.ones(self.num_query+sum(self.num_fu_query),self.num_fu_frames+1).long())
+        # Explicitly frozen by SparseWorld4DTraj memory_finetune_mode after the
+        # base checkpoint has restored num_stamps_all and ind_stamps_all.
+        self.freeze_tass_state = False
 
 
     def _init_layers(self):
@@ -248,7 +251,11 @@ class OPUSHead(BaseModule):
             pred_paired_stamps.append(gt_stamps_list[i][pred_paired_idx_list[i]])
 
             fore_mask = (labels_list[i].reshape(num_query,-1,1)<2) | (labels_list[i].reshape(num_query,-1,1)>10)
-            self.num_stamps_all += (gt_stamps_list[i][pred_paired_idx_list[i]].reshape(num_query,num_pts,self.num_fu_frames+1) * fore_mask).sum(1)
+            if not self.freeze_tass_state:
+                self.num_stamps_all += (
+                    gt_stamps_list[i][pred_paired_idx_list[i]].reshape(
+                        num_query, num_pts, self.num_fu_frames + 1) *
+                    fore_mask).sum(1)
 
             # gt_pts_weights[i] = gt_pts_weights[i] * mask[gt_paired_idx_list[i]].squeeze(-1) * dist_mask[i]
 

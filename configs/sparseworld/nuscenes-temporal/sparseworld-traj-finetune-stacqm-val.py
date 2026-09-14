@@ -60,8 +60,10 @@ occ_names = [
 ]
 
 embed_dims = 256
-# val 评估专用: 使用 val 自己的缓存, 避免读取 train 缓存 (cross-split 泄漏/错配)
-query_memory_cache_root = './data/query_memory/sparseworld_val'
+query_memory_train_cache_root = (
+    './data/query_memory/sparseworld_epoch56_schema2_train')
+query_memory_val_cache_root = (
+    './data/query_memory/sparseworld_epoch56_schema2_val')
 query_memory_history_frames = 3
 query_memory_max_queries_per_frame = 256
 query_memory_write_threshold = 0.35
@@ -246,10 +248,10 @@ train_pipeline = [
     dict(type='LoadOccGTFromFile4DTraj'),
     dict(
         type='LoadQueryMemoryFromFiles',
-        cache_root=query_memory_cache_root,
+        cache_root=query_memory_train_cache_root,
         history_frames=query_memory_history_frames,
         max_queries_per_frame=query_memory_max_queries_per_frame,
-        strict=False,
+        strict=True,
         embed_dims=query_memory_embed_dims,
         num_points=query_memory_num_points,
         history_selection_mode=query_memory_history_selection_mode,
@@ -264,7 +266,7 @@ train_pipeline = [
         type='Collect4D', keys=['img', 'voxel_semantics',
                                 'mask_lidar','mask_camera',
                                  'rays', 'temporal_semantics', 'temporal_rays', 'temporal_ego_states', 'temporal_trajs','temporal2ego','temporal_ego2global',
-                                 'memory_query_feat', 'memory_points_metric', 'memory_conf', 'memory_reliability', 'memory_label', 'memory_valid', 'memory_source_ego2global', 'memory_age',
+                                 'memory_query_feat', 'memory_points_metric', 'memory_conf', 'memory_reliability', 'memory_label', 'memory_semantic_distribution', 'memory_valid', 'memory_source_ego2global', 'memory_age',
                                ],meta_keys = ('filename','ori_shape','img_shape','pad_shape','lidar2img','img_timestamp','timestamp','ego2lidar','ego2global','sample_idx','scene_token','scene_name','frame_idx',))
 ]
 
@@ -274,10 +276,10 @@ test_pipeline = [
     dict(type='LoadOccGTFromFile4DTraj'),  # For visualization...
     dict(
         type='LoadQueryMemoryFromFiles',
-        cache_root=query_memory_cache_root,
+        cache_root=query_memory_val_cache_root,
         history_frames=query_memory_history_frames,
         max_queries_per_frame=query_memory_max_queries_per_frame,
-        strict=False,
+        strict=True,
         embed_dims=query_memory_embed_dims,
         num_points=query_memory_num_points,
         history_selection_mode=query_memory_history_selection_mode,
@@ -300,7 +302,7 @@ test_pipeline = [
             dict(type='Collect4D', keys=['img', 'voxel_semantics',
                                         'mask_lidar','mask_camera','temporal_semantics',
                                         'temporal_ego_states', 'temporal_trajs', 'temporal_agent_boxes', 'temporal_agent_feats',
-                                        'memory_query_feat', 'memory_points_metric', 'memory_conf', 'memory_reliability', 'memory_label', 'memory_valid', 'memory_source_ego2global', 'memory_age',],
+                                        'memory_query_feat', 'memory_points_metric', 'memory_conf', 'memory_reliability', 'memory_label', 'memory_semantic_distribution', 'memory_valid', 'memory_source_ego2global', 'memory_age',],
                  meta_keys = ['filename','box_type_3d','ori_shape','img_shape','pad_shape','sample_idx',
                               'lidar2img','img_timestamp','timestamp','ego2lidar','ego2global','scene_token','scene_name','frame_idx','gt_boxes','gt_labels','occ_gt_path'])
         ])
@@ -321,10 +323,8 @@ share_data_config = dict(
     filter_empty_gt=False,
     img_info_prototype='bevdet4d',
     multi_adj_frame_id_cfg=multi_adj_frame_id_cfg,
-    query_memory_cache_root=query_memory_cache_root,
     query_memory_history_frames=query_memory_history_frames,
     query_memory_max_queries_per_frame=query_memory_max_queries_per_frame,
-    query_memory_strict=False,
     query_memory_history_selection_mode=query_memory_history_selection_mode,
     query_memory_history_target_ages=query_memory_history_target_ages,
     query_memory_history_age_tolerance=query_memory_history_age_tolerance,
@@ -333,7 +333,8 @@ share_data_config = dict(
 
 test_data_config = dict(
     pipeline=test_pipeline,
-    # ann_file=data_root + 'bevdetv2-nuscenes_infos_train.pkl')
+    query_memory_cache_root=query_memory_val_cache_root,
+    query_memory_strict=True,
     ann_file=data_root + 'bevdetv2-nuscenes_infos_val.pkl')
 
 data = dict(
@@ -343,6 +344,8 @@ data = dict(
         data_root=data_root,
         ann_file=data_root + 'bevdetv2-nuscenes_infos_train.pkl',
         pipeline=train_pipeline,
+        query_memory_cache_root=query_memory_train_cache_root,
+        query_memory_strict=True,
         classes=class_names,
         test_mode=False,
         use_valid_flag=True,

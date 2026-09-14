@@ -255,11 +255,17 @@ class NuScenesDatasetOccpancy4DTraj(NuScenesDataset):
         current_scene = self._query_memory_scene_id(current)
         current_ts = self._query_memory_timestamp(current)
         candidates = []
+        cacheable_indices = getattr(
+            self, '_query_memory_cacheable_indices', None)
         hist_index = index - 1
         while hist_index >= 0:
             hist = self.data_infos[hist_index]
             if self._query_memory_scene_id(hist) != current_scene:
                 break
+            if cacheable_indices is not None and \
+                    hist_index not in cacheable_indices:
+                hist_index -= 1
+                continue
             hist_ts = self._query_memory_timestamp(hist)
             if hist_ts < current_ts:
                 info = self._hist_info_dict(hist, hist_index)
@@ -346,6 +352,11 @@ class NuScenesDatasetOccpancy4DTraj(NuScenesDataset):
             else:
                 self.temp2nusc_map.append(idx + 5)  # fair comparison with OccWorld
 
+        # Cache precompute iterates this same public dataset index space. Restrict
+        # formal history candidates to frames for which that process can actually
+        # produce a cache, so strict loading distinguishes missing generated files
+        # from frames outside the split's valid model-input range.
+        self._query_memory_cacheable_indices = set(self.temp2nusc_map)
         return data_infos
 
     def get_rays(self, index):

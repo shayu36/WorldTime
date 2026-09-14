@@ -81,6 +81,7 @@ class LoadQueryMemoryFromFiles(object):
                  strict=False,
                  embed_dims=256,
                  num_points=48,
+                 num_classes=17,
                  file_suffix='.pt',
                  history_selection_mode='recent',
                  history_target_ages=(2.5, 3.5, 4.5),
@@ -94,6 +95,7 @@ class LoadQueryMemoryFromFiles(object):
         self.strict = bool(strict)
         self.embed_dims = int(embed_dims)
         self.num_points = int(num_points)
+        self.num_classes = int(num_classes)
         self.file_suffix = file_suffix
         # Problem 6 (history selection) + Problem 5 (diversity selection).
         self.history_selection_mode = str(history_selection_mode)
@@ -170,9 +172,45 @@ class LoadQueryMemoryFromFiles(object):
             raise ValueError(f'{path} ego2global must be [4, 4]')
         M = query_feat.shape[0]
         if int(cache['schema_version']) >= 2:
-            for key in ('query_reliability', 'query_label'):
-                if key in cache and cache[key].shape[0] != M:
-                    raise ValueError(f'{path} {key} must share M with query_feat')
+            v2_required = [
+                'query_semantic_distribution', 'query_label', 'query_margin',
+                'query_entropy', 'query_reliability', 'num_classes'
+            ]
+            v2_missing = [key for key in v2_required if key not in cache]
+            if v2_missing:
+                raise KeyError(
+                    f'{path} schema-v2 cache missing keys: {v2_missing}')
+            num_classes = int(cache['num_classes'])
+            expected_shapes = dict(
+                query_semantic_distribution=(M, num_classes),
+                query_label=(M,),
+                query_margin=(M,),
+                query_entropy=(M,),
+                query_reliability=(M,))
+            for key, expected in expected_shapes.items():
+                if tuple(cache[key].shape) != expected:
+                    raise ValueError(
+                        f'{path} {key} must have shape {expected}, got '
+                        f'{tuple(cache[key].shape)}')
+            for key in ('query_semantic_distribution', 'query_margin',
+                        'query_entropy', 'query_reliability'):
+                if not torch.isfinite(cache[key]).all():
+                    raise ValueError(f'{path} {key} must be finite')
+            reliability = cache['query_reliability'].float()
+            margin = cache['query_margin'].float()
+            if ((reliability < 0) | (reliability > 1)).any():
+                raise ValueError(
+                    f'{path} query_reliability must be in [0, 1]')
+            if ((margin < 0) | (margin > 1)).any():
+                raise ValueError(f'{path} query_margin must be in [0, 1]')
+            distribution = cache['query_semantic_distribution'].float()
+            if ((distribution < 0) | (distribution > 1)).any():
+                raise ValueError(
+                    f'{path} query_semantic_distribution must be in [0, 1]')
+            if M > 0 and not torch.allclose(
+                    distribution.sum(dim=-1), torch.ones(M), atol=1e-5):
+                raise ValueError(
+                    f'{path} query_semantic_distribution rows must sum to 1')
         if hist is None:
             return
         hist_scene = self._hist_scene_id(hist)
@@ -226,6 +264,16 @@ class LoadQueryMemoryFromFiles(object):
         conf = cache['query_conf'].detach().cpu().float()
         valid = cache['valid_mask'].detach().cpu().bool()
         reliability, label = self._cache_reliability_labels(cache)
+        if int(cache.get('schema_version', 1)) >= 2 and \
+                'query_semantic_distribution' in cache:
+            semantic = cache['query_semantic_distribution'].detach().cpu().float()
+        else:
+            # Schema-v1 has no semantic distribution.  Preserve a valid
+            # uniform prior; the adapter still receives feature/geometry,
+            # reliability and age, while labels remain -1 (unknown).
+            semantic = torch.full(
+                (feat.shape[0], self.num_classes),
+                1.0 / float(self.num_classes), dtype=torch.float32)
         # deterministic reliability + class + spatial diversity, identical to
         # the online bank's selection rule.
         indices = select_diverse_memory_queries(
@@ -240,7 +288,8 @@ class LoadQueryMemoryFromFiles(object):
             max_per_class=self.max_per_class)
         sel_valid = torch.ones(indices.numel(), dtype=torch.bool)
         return (feat[indices], points[indices], conf[indices],
-                reliability[indices], label[indices], sel_valid)
+                reliability[indices], label[indices], semantic[indices],
+                sel_valid)
 
     def _history_candidates(self, results):
         current_scene = _scene_id(results)
@@ -273,9 +322,11 @@ class LoadQueryMemoryFromFiles(object):
             return slotted if slotted else filtered[-self.num_slots:]
         return filtered[-self.history_frames:]
 
-    def _empty_outputs(self, embed_dims=None, num_points=None):
+    def _empty_outputs(self, embed_dims=None, num_points=None,
+                       num_classes=None):
         embed_dims = self.embed_dims if embed_dims is None else int(embed_dims)
         num_points = self.num_points if num_points is None else int(num_points)
+        num_classes = self.num_classes if num_classes is None else int(num_classes)
         K = self.num_slots
         M = self.max_queries_per_frame
         return dict(
@@ -284,6 +335,7 @@ class LoadQueryMemoryFromFiles(object):
             memory_conf=torch.zeros(K, M),
             memory_reliability=torch.zeros(K, M),
             memory_label=torch.full((K, M), -1, dtype=torch.long),
+            memory_semantic_distribution=torch.zeros(K, M, num_classes),
             memory_valid=torch.zeros(K, M, dtype=torch.bool),
             memory_source_ego2global=torch.eye(4).repeat(K, 1, 1),
             memory_age=torch.zeros(K, M))
@@ -319,7 +371,7 @@ class LoadQueryMemoryFromFiles(object):
         if first_cache is not None:
             embed_dims = int(first_cache['query_feat'].shape[-1])
             num_points = int(first_cache['query_points_metric'].shape[-2])
-        memory = self._empty_outputs(embed_dims, num_points)
+        memory = self._empty_outputs(embed_dims, num_points, self.num_classes)
 
         num_slots = self.num_slots
         if self.history_selection_mode == 'target_age':
@@ -339,7 +391,7 @@ class LoadQueryMemoryFromFiles(object):
         for out_index, cache in placements:
             if cache is None:
                 continue
-            feat, points, conf, reliability, label, valid = \
+            feat, points, conf, reliability, label, semantic, valid = \
                 self._select_queries(cache)
             n = min(feat.shape[0], self.max_queries_per_frame)
             # base_age = t_current - t_history (NEVER mutate cached timestamps).
@@ -349,6 +401,17 @@ class LoadQueryMemoryFromFiles(object):
             memory['memory_conf'][out_index, :n] = conf[:n]
             memory['memory_reliability'][out_index, :n] = reliability[:n]
             memory['memory_label'][out_index, :n] = label[:n]
+            output_classes = memory['memory_semantic_distribution'].shape[-1]
+            if semantic.shape[-1] > output_classes:
+                raise ValueError(
+                    'cache semantic class dimension exceeds the configured '
+                    f'memory schema: {semantic.shape[-1]} > {output_classes}')
+            # Legacy/synthetic schema-v2 fixtures can contain a smaller class
+            # vocabulary.  Pad into the configured model vocabulary while
+            # preserving the validated distribution; production NuScenes
+            # caches use the full 17-class dimension.
+            memory['memory_semantic_distribution'][
+                out_index, :n, :semantic.shape[-1]] = semantic[:n]
             memory['memory_valid'][out_index, :n] = valid[:n] & (age > 0)
             memory['memory_source_ego2global'][out_index] = \
                 cache['ego2global'].detach().cpu().float()

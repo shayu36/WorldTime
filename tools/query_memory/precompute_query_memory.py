@@ -20,8 +20,10 @@ CACHE_SCHEMA_VERSION = 2
 REQUIRED_CACHE_KEYS = [
     'schema_version', 'sample_idx', 'scene_id', 'frame_idx', 'timestamp',
     'ego2global', 'query_feat', 'query_points_metric', 'query_conf',
-    'query_reliability', 'query_label', 'valid_mask', 'pc_range', 'embed_dims',
-    'num_points', 'num_classes', 'source_config', 'source_checkpoint'
+    'query_semantic_distribution', 'query_label', 'query_margin',
+    'query_entropy', 'query_reliability', 'valid_mask', 'pc_range',
+    'embed_dims', 'num_points', 'num_classes', 'source_config',
+    'source_checkpoint'
 ]
 
 
@@ -118,8 +120,11 @@ def build_cache_record(model, outs, img_meta, args):
         query_points, model.pts_bbox_head.pc_range)
     query_conf = logits_to_query_confidence(query_logits)
     rel = compute_query_reliability(query_logits)
-    query_reliability = rel['query_reliability']
+    query_semantic_distribution = rel['query_semantic_distribution']
     query_label = rel['query_label']
+    query_margin = rel['query_margin']
+    query_entropy = rel['query_entropy']
+    query_reliability = rel['query_reliability']
 
     if query_feat.shape[0] != 1:
         raise RuntimeError('precompute_query_memory expects batch_size=1')
@@ -153,8 +158,12 @@ def build_cache_record(model, outs, img_meta, args):
         query_feat=query_feat[0, indices].detach().cpu(),
         query_points_metric=query_points_metric[0, indices].detach().cpu(),
         query_conf=query_conf[0, indices].detach().cpu(),
-        query_reliability=query_reliability[0, indices].detach().cpu(),
+        query_semantic_distribution=query_semantic_distribution[
+            0, indices].detach().cpu(),
         query_label=query_label[0, indices].detach().cpu(),
+        query_margin=query_margin[0, indices].detach().cpu(),
+        query_entropy=query_entropy[0, indices].detach().cpu(),
+        query_reliability=query_reliability[0, indices].detach().cpu(),
         valid_mask=torch.ones(indices.numel(), dtype=torch.bool),
         pc_range=model.pts_bbox_head.pc_range.detach().cpu().tolist(),
         embed_dims=int(query_feat.shape[-1]),
@@ -179,10 +188,33 @@ def validate_cache_record(cache):
         raise ValueError('query_points_metric must be [M, R, 3]')
     if cache['query_conf'].shape != (M,):
         raise ValueError('query_conf must be [M]')
-    if cache['query_reliability'].shape != (M,):
-        raise ValueError('query_reliability must be [M]')
+    num_classes = int(cache['num_classes'])
+    if cache['query_semantic_distribution'].shape != (M, num_classes):
+        raise ValueError(
+            'query_semantic_distribution must be [M, num_classes]')
+    for key in ('query_margin', 'query_entropy', 'query_reliability'):
+        if cache[key].shape != (M,):
+            raise ValueError(f'{key} must be [M]')
+        if not torch.isfinite(cache[key]).all():
+            raise ValueError(f'{key} must contain only finite values')
     if cache['query_label'].shape != (M,):
         raise ValueError('query_label must be [M]')
+    if not torch.isfinite(cache['query_semantic_distribution']).all():
+        raise ValueError(
+            'query_semantic_distribution must contain only finite values')
+    if M > 0:
+        distribution = cache['query_semantic_distribution'].float()
+        if (distribution < 0).any() or (distribution > 1).any():
+            raise ValueError('query_semantic_distribution must be in [0, 1]')
+        if not torch.allclose(
+                distribution.sum(dim=-1), torch.ones(M), atol=1e-5):
+            raise ValueError('query_semantic_distribution rows must sum to 1')
+        reliability = cache['query_reliability'].float()
+        margin = cache['query_margin'].float()
+        if (reliability < 0).any() or (reliability > 1).any():
+            raise ValueError('query_reliability must be in [0, 1]')
+        if (margin < 0).any() or (margin > 1).any():
+            raise ValueError('query_margin must be in [0, 1]')
     if cache['valid_mask'].shape != (M,):
         raise ValueError('valid_mask must be [M]')
     if tuple(cache['ego2global'].shape) != (4, 4):
@@ -225,8 +257,11 @@ def main():
     # Strip LoadQueryMemoryFromFiles from pipeline (we are generating cache, not loading it)
     # Also remove memory-related keys from Collect4D (including nested inside
     # MultiScaleFlipAug3D transforms, which is how the val/test pipeline is built)
-    MEMORY_KEYS = {'memory_query_feat', 'memory_points_metric', 'memory_conf',
-                   'memory_valid', 'memory_source_ego2global', 'memory_age'}
+    MEMORY_KEYS = {
+        'memory_query_feat', 'memory_points_metric', 'memory_conf',
+        'memory_reliability', 'memory_label', 'memory_valid',
+        'memory_source_ego2global', 'memory_age'
+    }
 
     def _sanitize_transform(p):
         p = dict(p)  # shallow copy
