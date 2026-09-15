@@ -24,11 +24,17 @@ V2 修复五个相互关联的问题：候选支持统计量不再被 top-k 数�
 
 1. Query 粗检索计算 feature/geometry 路径和 semantic 增强路径，分别取
    `coarse_topk_geometry=8`、`coarse_topk_semantic=8`，稳定去重后形成并集。
-2. 对每个当前 Query，只展开并集中的历史 Query 及其 48 个历史点；历史
+2. geometry 候选和 semantic 候选在并集内部分别做 masked softmax 读取，使用
+   `coarse_geometry_context_weight`（默认 0.5）融合成该 Query 自己的
+   `H_coarse:[B,Q,C]`；因此 geometry 路径不会在读取阶段被错误语义关闭。
+3. 对每个当前 Query，只展开并集中的历史 Query 及其 48 个历史点；历史
    Query 语义分布广播到点，但每个历史点保留自己的空间位置编码。
-3. 在 `query_chunk_size=64` 的块内计算 Point Attention，取最多
+4. 在 `query_chunk_size=64` 的块内计算 Point Attention，取最多
    `point_topk=8`，得到 `H_qr`：`[B,Q,R,C]`，以及 `G_qr`：`[B,Q,R,1]`。
-4. Point Adapter 输入包含 Query、当前点位置编码、Context、Query-Context
+   默认一半完整 attention heads（`point_geometry_head_fraction=0.5`）仅读取
+   geometry 候选、几何/特征/时间分数，不接收显式语义项；其余 heads 才使用
+   semantic-enhanced 分数。多头特征是拼接而不是除以 head 数。
+5. Point Adapter 输入包含 Query、当前点位置编码、Context、Query-Context
    差异、horizon embedding、候选数、可靠性、有效年龄、距离、不确定性和
    当前/历史语义分歧，输出 semantic/occupancy/position residual 和 Point Gate。
 
@@ -142,14 +148,25 @@ coarse_summary，并注入所有当前 Query。这会绕过 memory_valid、effec
 现在每个 Query 的粗读取严格限定为：
 
     U_q = stable_unique(TopK(A_geometry) union TopK(A_semantic))
-    alpha_qm = MaskedSoftmax(A_semantic[q,m]), m in U_q
-    H_coarse[q] = sum(m in U_q) alpha_qm * V_m
+    alpha_qm^g = MaskedSoftmax(A_geometry[q,m]), m in U_q^g
+    alpha_qm^s = MaskedSoftmax(A_semantic[q,m]), m in U_q^s
+    H_g[q] = sum(m in U_q^g) alpha_qm^g * V_m
+    H_s[q] = sum(m in U_q^s) alpha_qm^s * V_m
+    H_coarse[q] = lambda_g H_g[q] + lambda_s H_s[q]
 
-H_coarse 的 shape 为 [B,Q,C]。重复入选的候选只保留第一次出现的位置；原始连续
-候选分数在并集内部参与 softmax。全部候选无效时 alpha 与 H_coarse 严格为零。
+其中 `lambda_g` 在两条路径都有候选时至少为配置的非零下界；只有一条路径有
+效时另一条系数为零。`H_coarse` 的 shape 为 [B,Q,C]。重复入选的候选只保留
+第一次出现的位置，semantic 重复槽不会被第二次累计；每条路径的原始连续分数
+在自己的去重候选槽内参与 softmax。全部候选无效时两组 alpha 与 H_coarse
+严格为零。
 未选中、memory_valid=False、effective age 超限或粗半径外的 Memory 不会进入
 粗 Context，也不会展开到 Point Attention。当前点自身的 qpoint 仅作为 Point
 Attention 的 Query 条件，不会累加进历史 Point Memory Context。
+
+Point Attention 同样只展开 `U_q` 内历史 Query 的历史点。geometry heads 的
+masked softmax 只看 geometry 槽且不加入显式语义兼容项；semantic heads 看稳定
+并集并加入不确定性加权的语义项。于是错误的高置信度 Baseline 语义不能把 geometry
+候选的读取权重压到零。
 
 ## 10. 完整逐点语义分歧特征
 
@@ -198,6 +215,10 @@ Ku*R_memory，selected 除以 point_topk。Padding 与无效候选不计数；�
 当 delta_position_metric 为零时，两次 encode 输入相同，encoded_delta 严格为
 零；无候选或 gate 为零时直接返回原始 base_pos。非零残差仍按 pc_range 转换，
 输入不被原地修改，位置学习路径也没有 detach。
+
+V1 不调用该相对编码辅助函数。V1 的 `_refine_future_memory_points` 保留原来的
+`encode(decode(base_pos) + delta)` 路径，V2 单独调用
+`_refine_future_memory_points_v2`，从而不改变 V1 checkpoint 的运行路径。
 
 ## 13. cls_weights 统一转换
 

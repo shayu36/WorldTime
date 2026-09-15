@@ -93,6 +93,21 @@ def test_multihead_statistics_ignore_invalid_heads_without_nan():
     assert torch.isfinite(torch.stack(out)).all()
 
 
+def test_multihead_context_concatenation_does_not_average_heads():
+    adapter = _adapter()
+    heads = torch.ones(1, 1, 2, 2, 4)
+    valid = torch.ones(1, 1, 2, 2, dtype=torch.bool)
+    joined = adapter.concatenate_attention_heads(heads, valid)
+    assert joined.shape == (1, 1, 2, 2, 4)
+    assert torch.equal(joined, heads)
+    partial_valid = valid.clone()
+    partial_valid[..., 1] = False
+    partial = adapter.concatenate_attention_heads(heads, partial_valid)
+    assert torch.equal(partial[..., 0, :], heads[..., 0, :])
+    assert torch.equal(
+        partial[..., 1, :], torch.zeros_like(heads[..., 1, :]))
+
+
 def test_effective_age_is_horizon_aware_and_cache_is_not_mutated():
     adapter = _adapter(max_effective_age=20.)
     q = torch.randn(1, 1, 8)
@@ -262,6 +277,9 @@ def test_semantic_uncertainty_dropout_and_disagreement_are_explicit():
 
 def test_geometry_candidate_path_survives_wrong_semantics():
     adapter = _adapter()
+    with torch.no_grad():
+        adapter.out_proj.weight.copy_(torch.eye(adapter.embed_dims))
+        adapter.out_proj.bias.zero_()
     q = torch.randn(1, 1, 8); p = torch.zeros(1, 1, 2, 3)
     logits = torch.tensor([[[[8., -4., -4.], [8., -4., -4.]]]])
     memory = _memory(count=3)
@@ -274,6 +292,19 @@ def test_geometry_candidate_path_survives_wrong_semantics():
     assert original['diagnostics']['geometry_candidate_count'].item() == 2
     assert changed['diagnostics']['geometry_candidate_count'].item() == 2
     assert original['diagnostics']['coarse_candidate_count'].item() >= 1
+    assert torch.equal(
+        original['diagnostics']['geometry_indices'],
+        changed['diagnostics']['geometry_indices'])
+    assert torch.allclose(
+        original['diagnostics']['coarse_geometry_context'],
+        changed['diagnostics']['coarse_geometry_context'])
+    geometry_mass = original['diagnostics']['geometry_point_weight_mass']
+    assert torch.allclose(geometry_mass, torch.ones_like(geometry_mass))
+    # The first attention head is geometry-only; an explicitly wrong Memory
+    # semantic distribution cannot suppress its selected historical values.
+    assert torch.equal(
+        original['context'][..., :adapter.head_dim],
+        changed['context'][..., :adapter.head_dim])
 
 
 def _isolation_case(kind):
@@ -712,6 +743,47 @@ def test_position_residual_is_exact_identity_and_metric_direction():
         torch.tensor([4., 0., 0.]), atol=1e-5)
 
 
+def test_v1_position_path_remains_old_formula_and_v2_is_separate():
+    def encode_points(points, pc_range):
+        encoded = points.clone()
+        encoded[..., 0] = ((encoded[..., 0] - pc_range[0]) /
+                           (pc_range[3] - pc_range[0]))
+        encoded[..., 1] = ((encoded[..., 1] - pc_range[1]) /
+                           (pc_range[4] - pc_range[1]))
+        encoded[..., 2] = ((encoded[..., 2] - pc_range[2]) /
+                           (pc_range[5] - pc_range[2]))
+        return encoded
+
+    def decode_points(points, pc_range):
+        return QM.decode_points_metric(points, pc_range)
+
+    v1_method = _load_sparseworld_method(
+        '_refine_future_memory_points',
+        {'decode_points': decode_points, 'encode_points': encode_points})
+    v2_method = _load_sparseworld_method(
+        '_refine_future_memory_points_v2',
+        {'apply_metric_position_residual': QM.apply_metric_position_residual})
+    model = SimpleNamespace(
+        num_refines=2,
+        pc_range=torch.tensor([-40., -40., -1., 40., 40., 5.4]))
+    base = torch.tensor(
+        [[[[.25, .50, .75], [.10, .20, .30]],
+          [[.90, .80, .70], [.40, .60, .20]]]])
+    delta = torch.tensor(
+        [[[[.10, -.20, .05], [.30, .10, -.15]],
+          [[-.05, .20, .10], [.15, -.10, .25]]]])
+    old = v1_method(model, base, delta)
+    expected_old = encode_points(
+        decode_points(base, model.pc_range) + delta, model.pc_range)
+    assert torch.equal(old, expected_old)
+    v2 = v2_method(
+        model, base, delta, torch.ones(1, 2, 2, dtype=torch.bool))
+    assert torch.allclose(v2, old, atol=1e-5, rtol=1e-5)
+    assert torch.equal(
+        v2_method(model, base, torch.zeros_like(delta),
+                  torch.ones(1, 2, 2, dtype=torch.bool)), base)
+
+
 def test_point_occupancy_threshold_uses_head_score_thresholds():
     captured = {}
 
@@ -844,6 +916,7 @@ def test_model_v2_branch_keeps_baseline_recurrence_snapshots_isolated():
         lambda points, delta, active_mask=None:
         QM.apply_metric_position_residual(
             points, delta.reshape_as(points), model.pc_range, active_mask))
+    model._refine_future_memory_points_v2 = model._refine_future_memory_points
 
     query_feat = torch.linspace(
         -1., 1., stamps.numel() * C).reshape(B, stamps.numel(), C)

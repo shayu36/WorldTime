@@ -26,6 +26,11 @@ future_memory_adapter_v2 = dict(
     semantic_weight_floor=0.10,
     semantic_dropout_probability=0.10,
     query_chunk_size=64,
+    # The coarse read and half of the point heads retain an explicit
+    # geometry-only route, so wrong Baseline semantics cannot suppress all
+    # spatially plausible Memory evidence.
+    coarse_geometry_context_weight=0.50,
+    point_geometry_head_fraction=0.50,
     gate_bias=-1.0,
     dropout=0.0,
     voxel_size=(0.4, 0.4, 0.4),

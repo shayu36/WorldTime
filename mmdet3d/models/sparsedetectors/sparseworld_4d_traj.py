@@ -655,9 +655,13 @@ class SparseWorld4DTraj(OPUS):
                     active_position_mask = (
                         gate_active if active_position_mask is None else
                         active_position_mask & gate_active)
-                output_pos = self._refine_future_memory_points(
-                    base_pos_snapshot, gated_delta.flatten(2, 3),
-                    active_mask=active_position_mask)
+                if adapter_is_v2:
+                    output_pos = self._refine_future_memory_points_v2(
+                        base_pos_snapshot, gated_delta.flatten(2, 3),
+                        active_mask=active_position_mask)
+                else:
+                    output_pos = self._refine_future_memory_points(
+                        base_pos_snapshot, gated_delta.flatten(2, 3))
                 diag = dict(result.get('diagnostics', {}))
                 diag.update(enabled=True, internal_step=int(interval + 1),
                             horizon_id=int(horizon_id),
@@ -744,15 +748,16 @@ class SparseWorld4DTraj(OPUS):
         new_points = points_proposal + points_delta
         return encode_points(new_points, self.pc_range)
 
-    def _refine_future_memory_points(self, points_proposal, points_delta,
-                                     active_mask=None):
-        """Apply only a Memory point residual in metric coordinates.
+    def _refine_future_memory_points(self, points_proposal, points_delta):
+        """V1-compatible point refinement; kept byte-for-byte in spirit."""
+        B, Q = points_delta.shape[:2]
+        points_delta = points_delta.reshape(B, Q, self.num_refines, 3)
+        points_metric = decode_points(points_proposal, self.pc_range)
+        return encode_points(points_metric + points_delta, self.pc_range)
 
-        The shared helper converts only active points and applies the relative
-        encoded change to the original Baseline representation. Thus zero
-        residual, zero gate, or no candidate preserves the input tensor
-        exactly rather than returning a decode/encode round trip.
-        """
+    def _refine_future_memory_points_v2(self, points_proposal, points_delta,
+                                        active_mask=None):
+        """Apply V2 relative encoded point residual with strict zero identity."""
         B, Q = points_delta.shape[:2]
         points_delta = points_delta.reshape(B, Q, self.num_refines, 3)
         return apply_metric_position_residual(

@@ -1702,6 +1702,8 @@ class FutureMemoryAdapterV2(nn.Module):
                  point_radius=6.0, max_effective_age=8.0,
                  semantic_uncertainty_gamma=2.0, semantic_weight_floor=0.1,
                  semantic_dropout_probability=0.0, query_chunk_size=64,
+                 coarse_geometry_context_weight=0.5,
+                 point_geometry_head_fraction=0.5,
                  gate_bias=-1.0, dropout=0.0, pc_range=None,
                  voxel_size=(0.4, 0.4, 0.4), **kwargs):
         super().__init__()
@@ -1723,6 +1725,24 @@ class FutureMemoryAdapterV2(nn.Module):
         self.semantic_weight_floor = float(semantic_weight_floor)
         self.semantic_dropout_probability = float(semantic_dropout_probability)
         self.query_chunk_size = max(int(query_chunk_size), 1)
+        self.coarse_geometry_context_weight = float(
+            coarse_geometry_context_weight)
+        if not 0. < self.coarse_geometry_context_weight <= 1.:
+            raise ValueError(
+                'coarse_geometry_context_weight must be in (0, 1]')
+        self.point_geometry_head_fraction = float(
+            point_geometry_head_fraction)
+        if not 0. < self.point_geometry_head_fraction <= 1.:
+            raise ValueError(
+                'point_geometry_head_fraction must be in (0, 1]')
+        # At least one complete attention head is always independent of
+        # explicit current/history semantics. Remaining heads form the
+        # semantic-enhanced point read.
+        self.num_geometry_heads = max(
+            1, min(
+                self.num_heads,
+                int(math.ceil(
+                    self.num_heads * self.point_geometry_head_fraction))))
         self.voxel_size = tuple(float(x) for x in voxel_size)
         if pc_range is None:
             pc_range = [-40., -40., -1., 40., 40., 5.4]
@@ -1810,6 +1830,10 @@ class FutureMemoryAdapterV2(nn.Module):
                 coarse_candidate_count=torch.zeros(B, Q, dtype=torch.long,
                                                     device=query_feat.device),
                 coarse_context=z(B, Q, self.embed_dims),
+                coarse_geometry_context=z(B, Q, self.embed_dims),
+                coarse_semantic_context=z(B, Q, self.embed_dims),
+                coarse_geometry_weight=z(B, Q),
+                coarse_semantic_weight=z(B, Q),
                 point_semantic_current=z(
                     B, Q, self.num_points, self.num_classes),
                 point_semantic_memory=z(
@@ -1818,6 +1842,12 @@ class FutureMemoryAdapterV2(nn.Module):
                     B, Q, self.num_points, self.num_classes),
                 semantic_cosine=z(B, Q, self.num_points),
                 semantic_js_divergence=z(B, Q, self.num_points),
+                geometry_point_weight_mass=z(
+                    B, Q, self.num_points, self.num_geometry_heads),
+                semantic_point_weight_mass=z(
+                    B, Q, self.num_points,
+                    self.num_heads - self.num_geometry_heads),
+                num_geometry_heads=self.num_geometry_heads,
                 base_age=z(B, 0), effective_age=z(B, 0),
                 horizon_seconds=float(self.HORIZON_SECONDS[horizon_id]),
                 point_attention_shape=(B, 0, self.num_points, self.num_heads, 0)))
@@ -1983,6 +2013,20 @@ class FutureMemoryAdapterV2(nn.Module):
         dist = (dist_h * head_valid.to(dist_h.dtype)).sum(-1) / head_mass
         return rel, age, dist
 
+    @staticmethod
+    def concatenate_attention_heads(context_heads, head_valid):
+        """Keep valid head features at full scale before concatenation.
+
+        ``context_heads`` has shape ``[B,Q,R,H,D]``.  Heads are concatenated
+        into ``C=H*D``; they are not an ensemble to be averaged.  Head-count
+        normalization belongs only to scalar support statistics.
+        """
+        if context_heads.shape[:-1] != head_valid.shape:
+            raise ValueError(
+                'context_heads must be [B,Q,R,H,D] and head_valid [B,Q,R,H]')
+        return context_heads * head_valid.unsqueeze(-1).to(
+            context_heads.dtype)
+
     def _coarse(self, query, points, sem, sem_weight, flat, effective_age, horizon):
         B, Q, _ = query.shape
         N = flat['feat'].shape[1]
@@ -2066,36 +2110,82 @@ class FutureMemoryAdapterV2(nn.Module):
         sdist = srel.clone()
         point_memory_semantic = query_feat.new_zeros(
             B, Q, self.num_points, self.num_classes)
+        geometry_point_weight_mass = query_feat.new_zeros(
+            B, Q, self.num_points, self.num_geometry_heads)
+        semantic_point_weight_mass = query_feat.new_zeros(
+            B, Q, self.num_points, self.num_heads - self.num_geometry_heads)
         max_L = 0
         qbase = self.point_query_proj(self.query_norm(query_feat)).unsqueeze(2)
         qpos = self.current_point_pos(query_points_metric.float()).to(query_feat.dtype)
         coarse_v = self.value_proj(self.memory_norm(flat['feat']))
-        # Build one candidate-internal coarse context per current Query. The
-        # original continuous semantic-enhanced score is retained after top-k;
-        # invalid and duplicate union slots get exactly zero probability.
+        # Build two candidate-internal coarse reads.  Geometry and semantic
+        # routes use their own continuous scores after the stable deduplicated
+        # union; no unselected/all-memory summary can enter this context.
         batch_index = torch.arange(
             B, device=query_feat.device)[:, None, None]
         safe_coarse_idx = coarse_idx.clamp_min(0)
-        selected_coarse_score = torch.gather(
+        kg = geometry_idx.shape[-1]
+        geometry_union_valid = torch.zeros_like(coarse_valid)
+        geometry_union_valid[..., :kg] = coarse_valid[..., :kg]
+        semantic_union_valid = torch.zeros_like(coarse_valid)
+        semantic_union_valid[..., kg:] = coarse_valid[..., kg:]
+        selected_geom_score = torch.gather(
+            geom, -1, safe_coarse_idx)
+        selected_sem_score = torch.gather(
             sem_score, -1, safe_coarse_idx)
-        coarse_weights = safe_masked_softmax(
-            selected_coarse_score, coarse_valid, dim=-1)
+        geometry_coarse_weights = safe_masked_softmax(
+            selected_geom_score, geometry_union_valid, dim=-1)
+        semantic_coarse_weights = safe_masked_softmax(
+            selected_sem_score, semantic_union_valid, dim=-1)
         selected_coarse_value = coarse_v[batch_index, safe_coarse_idx]
-        coarse_context = (
-            coarse_weights[..., None].to(selected_coarse_value.dtype) *
+        geometry_coarse_context = (
+            geometry_coarse_weights[..., None].to(selected_coarse_value.dtype) *
             selected_coarse_value).sum(-2).to(query_feat.dtype)
+        semantic_coarse_context = (
+            semantic_coarse_weights[..., None].to(selected_coarse_value.dtype) *
+            selected_coarse_value).sum(-2).to(query_feat.dtype)
+        geometry_has = geometry_union_valid.any(-1)
+        semantic_has = semantic_union_valid.any(-1)
+        both_routes = geometry_has & semantic_has
+        geometry_mix = torch.where(
+            both_routes,
+            coarse_valid.new_full((), self.coarse_geometry_context_weight,
+                                  dtype=query_feat.dtype),
+            geometry_has.to(query_feat.dtype))
+        semantic_mix = torch.where(
+            both_routes,
+            coarse_valid.new_full(
+                (), 1. - self.coarse_geometry_context_weight,
+                dtype=query_feat.dtype),
+            semantic_has.to(query_feat.dtype))
+        coarse_context = (
+            geometry_mix[..., None] * geometry_coarse_context +
+            semantic_mix[..., None] * semantic_coarse_context)
         coarse_context = coarse_context * coarse_valid.any(-1).unsqueeze(
             -1).to(coarse_context.dtype)
+        coarse_weights = (
+            geometry_mix[..., None] * geometry_coarse_weights +
+            semantic_mix[..., None] * semantic_coarse_weights)
 
         # [B,Q,R,C]. Current qpoint conditions point attention, but is not
         # itself added to the returned historical Point Memory Context.
-        qpoint = (
-            qbase + qpos +
-            self.semantic_query_proj(
-                retrieval_semantic.to(
-                    self.semantic_query_proj.weight.dtype)).to(
-                        query_feat.dtype) +
-            h + coarse_context.unsqueeze(2))
+        semantic_query = self.semantic_query_proj(
+            retrieval_semantic.to(self.semantic_query_proj.weight.dtype)).to(
+                query_feat.dtype)
+        qpoint_geometry = qbase + qpos + h + geometry_coarse_context.unsqueeze(2)
+        qpoint_semantic = (
+            qbase + qpos + h + coarse_context.unsqueeze(2) + semantic_query)
+        head_is_geometry = torch.arange(
+            self.num_heads, device=query_feat.device) < self.num_geometry_heads
+        head_is_geometry = head_is_geometry.view(1, 1, 1, self.num_heads, 1)
+        qpoint_geometry_heads = qpoint_geometry.float().view(
+            B, Q, self.num_points, self.num_heads, -1)
+        qpoint_semantic_heads = qpoint_semantic.float().view(
+            B, Q, self.num_points, self.num_heads, -1)
+        qpoint_heads = torch.where(
+            head_is_geometry, qpoint_geometry_heads, qpoint_semantic_heads)
+        qpoint = qpoint_heads.reshape(B, Q, self.num_points, C).to(
+            query_feat.dtype)
         for start in range(0, Q, self.query_chunk_size):
             stop = min(Q, start + self.query_chunk_size)
             idx = coarse_idx[:, start:stop].clamp_min(0); cv = coarse_valid[:, start:stop]
@@ -2115,21 +2205,37 @@ class FutureMemoryAdapterV2(nn.Module):
             hvld = hvld.unsqueeze(-1).expand(-1, -1, -1, rm).reshape(B, stop-start, L)
             coarse_point_valid = cv.unsqueeze(-1).expand(-1, -1, -1, rm).reshape(B, stop-start, L)
             hvld = hvld & coarse_point_valid
-            qv = qpoint[:, start:stop]
-            qk = qv.float().view(
-                B, stop-start, self.num_points, self.num_heads, -1)
-            hk = (hk_query + self.point_key_proj(self.memory_norm(hf)) + self.memory_point_pos(hp.float()).to(hf.dtype) + self.semantic_memory_proj(hsx.to(self.semantic_memory_proj.weight.dtype)).to(hf.dtype)).float().view(B, stop-start, L, self.num_heads, -1)
+            chunk_geometry_union_valid = geometry_union_valid[:, start:stop]
+            geometry_point_valid = chunk_geometry_union_valid.unsqueeze(-1).expand(
+                -1, -1, -1, rm).reshape(B, stop-start, L)
+            geometry_hvld = hvld & geometry_point_valid
+            qk = qpoint_heads[:, start:stop]
+            point_key = self.point_key_proj(self.memory_norm(hf))
+            point_pos = self.memory_point_pos(hp.float()).to(hf.dtype)
+            semantic_key = self.semantic_memory_proj(
+                hsx.to(self.semantic_memory_proj.weight.dtype)).to(hf.dtype)
+            hk_geometry = (hk_query + point_key + point_pos).float().view(
+                B, stop-start, L, self.num_heads, -1)
+            hk_semantic = (hk_query + point_key + point_pos + semantic_key).float().view(
+                B, stop-start, L, self.num_heads, -1)
+            hk = torch.where(head_is_geometry, hk_geometry, hk_semantic)
             vv = (hv_query + self.point_value_proj(self.memory_norm(hf)) + self.memory_point_pos(hp.float()).to(hf.dtype)).float().view(B, stop-start, L, self.num_heads, -1)
             score = torch.einsum('bqrhd,bqlhd->bqrhl', qk, hk) / math.sqrt(self.head_dim)
             pd = torch.sqrt(((query_points_metric[:, start:stop, :, None] - hp[:, :, None]) ** 2).sum(-1).clamp_min(0.))
             compat = torch.einsum(
                 'bqrc,bqlc->bqrl',
                 retrieval_semantic[:, start:stop], hsx).clamp_min(_EPS)
-            score = score - pd.square().unsqueeze(-2) / (self.point_radius ** 2 + _EPS) - ha[:, :, None, None, :] / (self.max_effective_age + _EPS) + torch.log(hr.clamp_min(_EPS))[:, :, None, None, :] + retrieval_semantic_weight[:, start:stop].unsqueeze(-1).unsqueeze(-1) * torch.log(compat).unsqueeze(-2)
+            semantic_score_term = retrieval_semantic_weight[:, start:stop].unsqueeze(-1).unsqueeze(-1) * torch.log(compat).unsqueeze(-2)
+            score = score - pd.square().unsqueeze(-2) / (self.point_radius ** 2 + _EPS) - ha[:, :, None, None, :] / (self.max_effective_age + _EPS) + torch.log(hr.clamp_min(_EPS))[:, :, None, None, :] + torch.where(head_is_geometry, torch.zeros_like(semantic_score_term), semantic_score_term)
             eligible_mask = (
                 hvld[:, :, None, :] & (pd <= self.point_radius))
-            pmask = eligible_mask.unsqueeze(-2).expand(
-                -1, -1, -1, self.num_heads, -1)
+            geometry_eligible_mask = (
+                geometry_hvld[:, :, None, :] & (pd <= self.point_radius))
+            pmask = torch.where(
+                head_is_geometry,
+                geometry_eligible_mask.unsqueeze(-2),
+                eligible_mask.unsqueeze(-2)).expand(
+                    -1, -1, -1, self.num_heads, -1)
             pk = min(self.point_topk, L)
             ts, ti = torch.topk(score.masked_fill(~pmask, torch.finfo(score.dtype).min), pk, -1)
             tv = torch.gather(pmask, -1, ti)
@@ -2140,7 +2246,8 @@ class FutureMemoryAdapterV2(nn.Module):
             context_heads = (w[..., None] * sv).sum(-2)
             head_valid = tv.any(-1)
             head_den = head_valid.float().sum(-1).clamp_min(1.)
-            context_heads = context_heads * head_valid[..., None].to(context_heads.dtype) / head_den[..., None, None]
+            context_heads = self.concatenate_attention_heads(
+                context_heads, head_valid)
             context[:, start:stop] = context_heads.reshape(B, stop-start, self.num_points, C).to(context.dtype)
             eligible_counts[:, start:stop] = eligible_mask.sum(-1)
             selected_counts[:, start:stop] = tv.sum(-1).amax(-1)
@@ -2160,6 +2267,11 @@ class FutureMemoryAdapterV2(nn.Module):
             point_memory_semantic[:, start:stop] = torch.where(
                 has[:, start:stop].unsqueeze(-1), mean_s,
                 torch.zeros_like(mean_s)).to(point_memory_semantic.dtype)
+            geometry_point_weight_mass[:, start:stop] = w[..., :self.num_geometry_heads, :].mul(
+                tv[..., :self.num_geometry_heads, :].to(w.dtype)).sum(-1)
+            if self.num_geometry_heads < self.num_heads:
+                semantic_point_weight_mass[:, start:stop] = w[..., self.num_geometry_heads:, :].mul(
+                    tv[..., self.num_geometry_heads:, :].to(w.dtype)).sum(-1)
         # Only selected historical point values reach Point Memory Context.
         # Current qpoint and pooling over all Memory queries are excluded.
         context = self.out_proj(context.to(self.out_proj.weight.dtype)).to(query_feat.dtype) * has.unsqueeze(-1).to(query_feat.dtype)
@@ -2206,9 +2318,15 @@ class FutureMemoryAdapterV2(nn.Module):
                            coarse_indices=coarse_idx.detach(), coarse_valid=coarse_valid.detach(),
                            coarse_attention_weights=coarse_weights.detach(),
                            coarse_context=coarse_context.detach(),
+                           coarse_geometry_context=geometry_coarse_context.detach(),
+                           coarse_semantic_context=semantic_coarse_context.detach(),
+                           coarse_geometry_weight=geometry_mix.detach(),
+                           coarse_semantic_weight=semantic_mix.detach(),
                            geometry_indices=geometry_idx.detach(), geometry_valid=geometry_valid.detach(),
                            semantic_indices=semantic_idx.detach(), semantic_valid=semantic_valid.detach(),
-                           geometry_candidate_count=global_valid.sum(-1),
+                           geometry_candidate_count=geometry_valid.sum(-1),
+                           semantic_candidate_count=semantic_valid.sum(-1),
+                           eligible_coarse_candidate_count=global_valid.sum(-1),
                            support_reliability=srel.detach(), support_age=sage.detach(), average_age=sage.detach(),
                            support_distance=sdist.detach(), average_distance=sdist.detach(),
                            base_age=flat['base_age'].detach(), effective_age=effective_age.detach(),
@@ -2226,6 +2344,9 @@ class FutureMemoryAdapterV2(nn.Module):
                            semantic_cosine=semantic_cosine.detach(),
                            semantic_js_divergence=semantic_js.detach(),
                            semantic_disagreement=semantic_js.detach(),
+                           geometry_point_weight_mass=geometry_point_weight_mass.detach(),
+                           semantic_point_weight_mass=semantic_point_weight_mass.detach(),
+                           num_geometry_heads=self.num_geometry_heads,
                            coarse_score_shape=tuple(geom.shape), point_attention_shape=(B, min(self.query_chunk_size, Q), self.num_points, self.num_heads, max_L),
                            attention_shape=(B, min(self.query_chunk_size, Q), self.num_points, self.num_heads, max_L))
         diagnostics['point_context'] = context
