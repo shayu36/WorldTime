@@ -3,6 +3,7 @@ from mmdet3d.models.detectors.bevdet_occ import BEVStereo4DOCC
 from .opus import OPUS
 import torch.nn.functional as F
 import torch
+from torch.utils.checkpoint import checkpoint
 import time
 import warnings
 from mmdet.models import DETECTORS
@@ -325,6 +326,16 @@ class SparseWorld4DTraj(OPUS):
                                if self.future_memory_adapter_version == 'v2'
                                and future_adapter_v2_cfg is not None
                                else future_adapter_cfg)
+        self.future_memory_adapter_v2_save_on_cpu = bool(
+            self.query_memory_cfg.get('future_memory_adapter_v2_save_on_cpu',
+                                      False)
+            if selected_future_cfg is None else
+            selected_future_cfg.get('save_on_cpu', False))
+        self.future_memory_adapter_v2_activation_checkpoint = bool(
+            self.query_memory_cfg.get(
+                'future_memory_adapter_v2_activation_checkpoint', True)
+            if selected_future_cfg is None else
+            selected_future_cfg.get('activation_checkpoint', True))
         self.future_memory_adapter_enabled = bool(
             self.query_memory_cfg.get('future_memory_adapter_enabled', False)
             if selected_future_cfg is None else
@@ -557,6 +568,13 @@ class SparseWorld4DTraj(OPUS):
         base_points_list = []
         forecast_semantic_logits_list = []
         forecast_occupancy_logits_list = []
+        # A rank can legitimately receive a sample with no valid point-level
+        # Memory candidate. In that case the strict Baseline fallback bypasses
+        # delta_p entirely, which makes DDP report delta_p_head as unused on
+        # only that rank. This scalar zero anchor keeps the parameter graph
+        # identical across ranks without changing any loss value or gradient
+        # (the multiplier is exactly zero).
+        v2_graph_anchor = state_feat.new_zeros(())
 
         target_ego2global = None
         if memory_context is not None and \
@@ -570,6 +588,56 @@ class SparseWorld4DTraj(OPUS):
         adapter_is_v2 = getattr(self, 'future_memory_adapter_version', 'v1') == 'v2'
         adapter_module = (self.future_memory_adapter_v2
                           if adapter_is_v2 else self.future_memory_adapter)
+
+        # The frozen OPUS forward is already close to the 24 GB limit on a
+        # 3090. V2 therefore recomputes its trainable branch during backward
+        # instead of retaining all three horizons' point-attention graphs.
+        # Full save_on_cpu is retained only as an opt-in fallback: with
+        # query_chunk_size=1 it creates thousands of host-side saved tensors
+        # and can exhaust 128 GB RAM before the first backward.
+        v2_activation_checkpoint = bool(getattr(
+            self, 'future_memory_adapter_v2_activation_checkpoint', True))
+        v2_save_on_cpu = bool(
+            getattr(self, 'future_memory_adapter_v2_save_on_cpu', False))
+
+        def _run_adapter(*adapter_args, **adapter_kwargs):
+            if adapter_is_v2 and self.training and v2_activation_checkpoint:
+                # Training losses use only the four residual tensors. Large
+                # audit diagnostics are omitted from the checkpointed pass.
+                # Non-reentrant checkpointing supports frozen tensor inputs
+                # while still producing gradients for V2 parameters, and it
+                # preserves RNG state for Semantic Dropout recomputation.
+                query_arg, points_arg, logits_arg, memory_arg, horizon_arg = \
+                    adapter_args[:5]
+                target_pose = adapter_kwargs.get('target_ego2global')
+
+                def _checkpointed_adapter(query_tensor, points_tensor,
+                                           logits_tensor):
+                    output = adapter_module(
+                        query_tensor, points_tensor, logits_tensor,
+                        memory_arg, horizon_arg,
+                        target_ego2global=target_pose,
+                        return_diagnostics=False)
+                    return (output['delta_s'], output['delta_o'],
+                            output['delta_p'], output['gate'])
+
+                delta_s, delta_o, delta_p, gate = checkpoint(
+                    _checkpointed_adapter, query_arg, points_arg, logits_arg,
+                    use_reentrant=False, preserve_rng_state=True)
+                return dict(delta_s=delta_s, delta_o=delta_o,
+                            delta_p=delta_p, gate=gate, point_gate=gate,
+                            diagnostics={})
+            if not (adapter_is_v2 and self.training and v2_save_on_cpu):
+                return adapter_module(*adapter_args, **adapter_kwargs)
+            save_on_cpu = getattr(torch.autograd.graph, 'save_on_cpu', None)
+            if save_on_cpu is None:
+                return adapter_module(*adapter_args, **adapter_kwargs)
+            # pin_memory=False avoids a second host-side pinned allocation for
+            # every query chunk; the CUDA copy is still asynchronous where
+            # supported by the autograd saved-tensor hooks.
+            with save_on_cpu(pin_memory=False):
+                return adapter_module(*adapter_args, **adapter_kwargs)
+
         for interval in range(self.num_fu_frames):
             # Baseline trajectory/state update.  Inputs are intentionally
             # detached exactly as in the original OPUS recurrence.
@@ -615,14 +683,18 @@ class SparseWorld4DTraj(OPUS):
             if interval in target_horizons:
                 horizon_id, horizon_name = target_horizons[interval]
                 if memory_context is None:
-                    result = adapter_module(
+                    result = _run_adapter(
                         state_feat, decode_points_metric(state_pos, self.pc_range),
                         base_cls_snapshot, None, horizon_id)
                 else:
-                    result = adapter_module(
+                    result = _run_adapter(
                         state_feat, decode_points_metric(state_pos, self.pc_range),
                         base_cls_snapshot, memory_context, horizon_id,
                         target_ego2global=target_ego2global)
+                if adapter_is_v2:
+                    v2_graph_anchor = v2_graph_anchor + (
+                        result['delta_s'].sum() + result['delta_o'].sum() +
+                        result['delta_p'].sum() + result['gate'].sum()) * 0.0
                 gate = result['gate']
                 if adapter_is_v2:
                     # Keep semantic ordering and occupancy thresholding as
@@ -716,6 +788,7 @@ class SparseWorld4DTraj(OPUS):
         if adapter_is_v2:
             outputs['forecast_semantic_logits_list'] = forecast_semantic_logits_list
             outputs['forecast_occupancy_logits_list'] = forecast_occupancy_logits_list
+            outputs['future_memory_v2_graph_anchor'] = v2_graph_anchor
         return outputs
 
     def _future_memory_v2_losses(self, semantic_logits, occupancy_logits,
@@ -1886,6 +1959,16 @@ class SparseWorld4DTraj(OPUS):
                 else:
                     losses[f'mem_{horizon_name}.loss_cls'] = raw['fu1.loss_cls']
                     losses[f'mem_{horizon_name}.loss_pts'] = raw['fu1.loss_pts']
+            # Keep DDP's used-parameter set consistent when a rank has an
+            # empty Memory/point mask. The anchor is identically zero and is
+            # not an additional optimization objective.
+            if self.future_memory_adapter_version == 'v2':
+                # The MMDetection loss parser only sums keys containing the
+                # token ``loss``; keep that token in this zero-valued graph
+                # anchor so it actually participates in backward/DDP.
+                losses['loss_future_memory_v2_graph_anchor'] = outputs.get(
+                    'future_memory_v2_graph_anchor',
+                    cls_score.new_zeros(()))
         else:
             losses.update(
                 self.pts_bbox_head.loss_future(

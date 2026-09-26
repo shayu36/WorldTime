@@ -25,7 +25,15 @@ future_memory_adapter_v2 = dict(
     semantic_uncertainty_gamma=2.0,
     semantic_weight_floor=0.10,
     semantic_dropout_probability=0.10,
-    query_chunk_size=64,
+    # 40 is the validated compromise on the available 24 GB GPUs: it
+    # reduces Python chunk-loop overhead versus q32 while retaining enough
+    # headroom for the frozen Baseline activations.
+    query_chunk_size=40,
+    # Recompute V2 during backward rather than retaining three horizons of
+    # point-attention activations. Full CPU offload is disabled because the
+    # thousands of query chunks can exhaust host RAM before the first step.
+    activation_checkpoint=True,
+    save_on_cpu=False,
     # The coarse read and half of the point heads retain an explicit
     # geometry-only route, so wrong Baseline semantics cannot suppress all
     # spatially plausible Memory evidence.

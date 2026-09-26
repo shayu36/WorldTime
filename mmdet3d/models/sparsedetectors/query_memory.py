@@ -2055,7 +2055,8 @@ class FutureMemoryAdapterV2(nn.Module):
         return ui, uv, gmask, dist, geom, sem_score, gi, gv, si, sv, k
 
     def forward(self, query_feat, query_points_metric, baseline_logits, memory,
-                horizon_id, target_ego2global=None, **kwargs):
+                horizon_id, target_ego2global=None, return_diagnostics=True,
+                **kwargs):
         del kwargs
         if query_feat.dim() != 3 or query_points_metric.dim() != 4 or baseline_logits.dim() != 4:
             raise ValueError('V2 expects [B,Q,C], [B,Q,R,3], [B,Q,R,C]')
@@ -2172,20 +2173,16 @@ class FutureMemoryAdapterV2(nn.Module):
         semantic_query = self.semantic_query_proj(
             retrieval_semantic.to(self.semantic_query_proj.weight.dtype)).to(
                 query_feat.dtype)
-        qpoint_geometry = qbase + qpos + h + geometry_coarse_context.unsqueeze(2)
-        qpoint_semantic = (
-            qbase + qpos + h + coarse_context.unsqueeze(2) + semantic_query)
         head_is_geometry = torch.arange(
             self.num_heads, device=query_feat.device) < self.num_geometry_heads
         head_is_geometry = head_is_geometry.view(1, 1, 1, self.num_heads, 1)
-        qpoint_geometry_heads = qpoint_geometry.float().view(
-            B, Q, self.num_points, self.num_heads, -1)
-        qpoint_semantic_heads = qpoint_semantic.float().view(
-            B, Q, self.num_points, self.num_heads, -1)
-        qpoint_heads = torch.where(
-            head_is_geometry, qpoint_geometry_heads, qpoint_semantic_heads)
-        qpoint = qpoint_heads.reshape(B, Q, self.num_points, C).to(
-            query_feat.dtype)
+        # Build the Point-Attention query per chunk instead of materialising
+        # geometry and semantic versions for every active Query at once.  The
+        # returned attention_query is an audit snapshot and is intentionally
+        # detached; gradients still flow through each chunk's qpoint into the
+        # point-query projection while the context is computed.
+        attention_query = (query_feat.new_empty(
+            B, Q, self.num_points, C) if return_diagnostics else None)
         for start in range(0, Q, self.query_chunk_size):
             stop = min(Q, start + self.query_chunk_size)
             idx = coarse_idx[:, start:stop].clamp_min(0); cv = coarse_valid[:, start:stop]
@@ -2209,8 +2206,36 @@ class FutureMemoryAdapterV2(nn.Module):
             geometry_point_valid = chunk_geometry_union_valid.unsqueeze(-1).expand(
                 -1, -1, -1, rm).reshape(B, stop-start, L)
             geometry_hvld = hvld & geometry_point_valid
-            qk = qpoint_heads[:, start:stop]
-            point_key = self.point_key_proj(self.memory_norm(hf))
+            qpos_chunk = qpos[:, start:stop]
+            qpoint_geometry = (
+                qbase[:, start:stop] + qpos_chunk +
+                h[:, start:stop] +
+                geometry_coarse_context[:, start:stop].unsqueeze(2))
+            qpoint_semantic = (
+                qbase[:, start:stop] + qpos_chunk +
+                h[:, start:stop] + coarse_context[:, start:stop].unsqueeze(2) +
+                semantic_query[:, start:stop])
+            qpoint_geometry_heads = qpoint_geometry.float().view(
+                B, stop - start, self.num_points, self.num_heads, -1)
+            qpoint_semantic_heads = qpoint_semantic.float().view(
+                B, stop - start, self.num_points, self.num_heads, -1)
+            qpoint_heads = torch.where(
+                head_is_geometry, qpoint_geometry_heads,
+                qpoint_semantic_heads)
+            qpoint = qpoint_heads.reshape(
+                B, stop - start, self.num_points, C).to(query_feat.dtype)
+            if attention_query is not None:
+                attention_query[:, start:stop] = qpoint.detach()
+            qk = qpoint_heads
+            # Reuse the normalized historical point features for both key and
+            # value projections.  The previous implementation evaluated
+            # memory_norm(hf) twice and evaluated memory_point_pos(hp) a
+            # second time while building ``vv``.  Those duplicate activation
+            # graphs are numerically identical but can exceed a 24GB card at
+            # the first training iteration.  Reusing them preserves the
+            # point-level data flow and gradients while removing the copies.
+            normalized_hf = self.memory_norm(hf)
+            point_key = self.point_key_proj(normalized_hf)
             point_pos = self.memory_point_pos(hp.float()).to(hf.dtype)
             semantic_key = self.semantic_memory_proj(
                 hsx.to(self.semantic_memory_proj.weight.dtype)).to(hf.dtype)
@@ -2219,7 +2244,9 @@ class FutureMemoryAdapterV2(nn.Module):
             hk_semantic = (hk_query + point_key + point_pos + semantic_key).float().view(
                 B, stop-start, L, self.num_heads, -1)
             hk = torch.where(head_is_geometry, hk_geometry, hk_semantic)
-            vv = (hv_query + self.point_value_proj(self.memory_norm(hf)) + self.memory_point_pos(hp.float()).to(hf.dtype)).float().view(B, stop-start, L, self.num_heads, -1)
+            point_value = self.point_value_proj(normalized_hf)
+            vv = (hv_query + point_value + point_pos).float().view(
+                B, stop-start, L, self.num_heads, -1)
             score = torch.einsum('bqrhd,bqlhd->bqrhl', qk, hk) / math.sqrt(self.head_dim)
             pd = torch.sqrt(((query_points_metric[:, start:stop, :, None] - hp[:, :, None]) ** 2).sum(-1).clamp_min(0.))
             compat = torch.einsum(
@@ -2293,24 +2320,48 @@ class FutureMemoryAdapterV2(nn.Module):
             semantic_cosine,
             semantic_js,
         ], -1).to(query_feat.dtype)
+        # The adapter MLP is evaluated in the same query chunks as Point
+        # Attention.  Building one [B,Q,R,adapter_input_dims] activation for
+        # all active queries is needlessly expensive on the 24 GB training
+        # cards and also keeps every intermediate MLP activation live until
+        # the final horizon loss.  Chunking changes neither the affine maps
+        # nor their gradients; concatenation/assignment only restores the
+        # original output shapes.
         qexpanded = query_feat.unsqueeze(2).expand(-1, -1, self.num_points, -1)
-        adapter_input = torch.cat([
-            qexpanded, qpos, context, qexpanded - context, h,
-            point_semantic.to(query_feat.dtype),
-            point_memory_semantic.to(query_feat.dtype),
-            semantic_difference.to(query_feat.dtype), scalar_features], -1)
-        if adapter_input.shape[-1] != self.adapter_input_dims:
-            raise RuntimeError(
-                'FutureMemoryAdapterV2 adapter input has '
-                f'{adapter_input.shape[-1]} features, expected '
-                f'{self.adapter_input_dims}')
-        adapted = self.adapter(adapter_input)
-        delta_s, delta_o, delta_p = self.delta_s_head(adapted), self.delta_o_head(adapted), self.delta_p_head(adapted)
-        point_mask = has.unsqueeze(-1).to(adapted.dtype)
+        delta_s = query_feat.new_zeros(B, Q, self.num_points, self.num_classes)
+        delta_o = query_feat.new_zeros(B, Q, self.num_points, 1)
+        delta_p = query_feat.new_zeros(B, Q, self.num_points, 3)
+        gate = query_feat.new_zeros(B, Q, self.num_points, 1)
+        for start in range(0, Q, self.query_chunk_size):
+            stop = min(Q, start + self.query_chunk_size)
+            adapter_input = torch.cat([
+                qexpanded[:, start:stop], qpos[:, start:stop],
+                context[:, start:stop],
+                qexpanded[:, start:stop] - context[:, start:stop],
+                h[:, start:stop],
+                point_semantic[:, start:stop].to(query_feat.dtype),
+                point_memory_semantic[:, start:stop].to(query_feat.dtype),
+                semantic_difference[:, start:stop].to(query_feat.dtype),
+                scalar_features[:, start:stop]], -1)
+            if adapter_input.shape[-1] != self.adapter_input_dims:
+                raise RuntimeError(
+                    'FutureMemoryAdapterV2 adapter input has '
+                    f'{adapter_input.shape[-1]} features, expected '
+                    f'{self.adapter_input_dims}')
+            adapted = self.adapter(adapter_input)
+            delta_s[:, start:stop] = self.delta_s_head(adapted)
+            delta_o[:, start:stop] = self.delta_o_head(adapted)
+            delta_p[:, start:stop] = self.delta_p_head(adapted)
+            gate[:, start:stop] = torch.sigmoid(self.gate_head(adapted))
+        point_mask = has.unsqueeze(-1).to(gate.dtype)
         delta_s = delta_s * point_mask
         delta_o = delta_o * point_mask
         delta_p = delta_p * point_mask
-        gate = torch.sigmoid(self.gate_head(adapted)) * point_mask
+        gate = gate * point_mask
+        if not return_diagnostics:
+            return dict(delta_s=delta_s, delta_o=delta_o, delta_p=delta_p,
+                        gate=gate, point_gate=gate)
+
         diagnostics = dict(has_candidate=has,
                            eligible_point_count=eligible_counts.detach(),
                            selected_point_count=selected_counts.detach(),
@@ -2349,11 +2400,15 @@ class FutureMemoryAdapterV2(nn.Module):
                            num_geometry_heads=self.num_geometry_heads,
                            coarse_score_shape=tuple(geom.shape), point_attention_shape=(B, min(self.query_chunk_size, Q), self.num_points, self.num_heads, max_L),
                            attention_shape=(B, min(self.query_chunk_size, Q), self.num_points, self.num_heads, max_L))
-        diagnostics['point_context'] = context
-        diagnostics['point_gate'] = gate
+        # Diagnostics are consumed for logging/tests only.  Keeping these
+        # large tensors attached to the training graph duplicates the V2
+        # activation footprint for every future horizon, so expose detached
+        # snapshots while the returned residuals retain their gradients.
+        diagnostics['point_context'] = context.detach()
+        diagnostics['point_gate'] = gate.detach()
         return dict(delta_s=delta_s, delta_o=delta_o, delta_p=delta_p,
                     gate=gate, point_gate=gate, context=context,
-                    point_context=context, attention_query=qpoint,
+                    point_context=context, attention_query=attention_query,
                     diagnostics=diagnostics)
 
 

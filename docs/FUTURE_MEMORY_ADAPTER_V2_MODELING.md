@@ -240,3 +240,17 @@ torch.as_tensor，并指定 S_sem 的 device 与 dtype，然后 flatten 为一�
 评估。因此当前只说明已知代码问题已修正且静态/前向验收通过；尚未进行梯度
 验收和训练前 smoke，不能据此声称 V2 已具备正式训练结论，也没有新的
 IoU/mIoU 提升结论。
+
+在 24 GB 显存卡上进行后续 V2 训练时，独立配置默认
+`activation_checkpoint=True`、`save_on_cpu=False`。Point Attention 和 Adapter
+MLP 仍按 `query_chunk_size` 分块，但 chunk 只能降低瞬时工作区，不能缩短反向图
+保存到统一 backward 之前的生命周期。因此训练模式使用 non-reentrant activation
+checkpoint，在 backward 时重算 V2，而不是同时保存 1s/2s/3s 的完整点级图。
+checkpointed 路径只返回损失需要的 delta_s/delta_o/delta_p/gate，不构造大型审计
+diagnostics；evaluation 和普通前向测试仍保留完整 diagnostics。
+
+曾尝试的全量 `save_on_cpu=True` 已改为非默认选项。实测 query_chunk_size=1 时，
+该方案没有发生 CUDA OOM，但三个 horizon 的数千个 chunk 把 host saved tensors
+累积到约 128.9 GB，最终触发 Linux OOM killer（SIGKILL -9）。因此它只是调试回退，
+不能与小 chunk 组合用于正式训练。activation checkpoint 不改变前向数值、候选
+集合、Baseline recurrence 或 V1 路径，代价是 backward 会额外重算 V2。

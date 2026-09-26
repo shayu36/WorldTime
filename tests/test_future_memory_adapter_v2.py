@@ -158,6 +158,22 @@ def test_point_context_gate_shapes_and_zero_candidate_identity():
         torch.zeros_like(empty['diagnostics']['selected_point_count']))
 
 
+def test_training_fast_path_omits_large_diagnostics():
+    adapter = _adapter()
+    adapter.train()
+    result = adapter(
+        torch.randn(1, 2, 8),
+        torch.randn(1, 2, 2, 3),
+        torch.randn(1, 2, 2, 3),
+        _memory(), 0, return_diagnostics=False)
+    assert 'diagnostics' not in result
+    assert 'context' not in result
+    assert result['delta_s'].shape == (1, 2, 2, 3)
+    assert result['delta_o'].shape == (1, 2, 2, 1)
+    assert result['delta_p'].shape == (1, 2, 2, 3)
+    assert result['gate'].shape == (1, 2, 2, 1)
+
+
 def test_zero_initialized_adapter_is_strict_baseline_identity():
     adapter = _adapter()
     adapter.eval()
