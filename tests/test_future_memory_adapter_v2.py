@@ -600,7 +600,8 @@ def test_class_weight_sources_complete_loss_forward(weights_factory):
             score_thresholds=[.35] * 15 + [.25, .30],
             positive_radius=.5)
     assert set(losses) == {
-        'loss_sem', 'loss_occ', 'loss_threshold', 'loss_soft_voxel'}
+        'loss_sem', 'loss_occ', 'loss_occ_anchor',
+        'loss_threshold', 'loss_soft_voxel'}
     assert all(torch.isfinite(loss) for loss in losses.values())
     if isinstance(weights, list):
         assert weights == original
@@ -679,6 +680,71 @@ def test_v2_loss_forward_edge_cases_are_finite(case):
             score_thresholds=[.35] * 15 + [.25, .30],
             positive_radius=radius)
     assert all(torch.isfinite(loss) for loss in losses.values())
+
+
+def test_occupancy_target_accepts_nonempty_voxel_corner():
+    pc_range = [0., 0., 0., .8, .8, .8]
+    # Metric position (0.01, 0.01, 0.01) is 0.329 m from its voxel centre,
+    # farther than the old 0.20 m rule, but it is inside the occupied voxel.
+    points = torch.tensor([[[[.0125, .0125, .0125]]]])
+    gt = torch.full((1, 2, 2, 2), 3, dtype=torch.long)
+    gt[0, 0, 0, 0] = 1
+    with torch.no_grad():
+        targets = QM.future_memory_v2_occupancy_targets(
+            points, None, gt, pc_range, voxel_size=[.4, .4, .4],
+            empty_label=3, positive_radius=.2)
+    assert targets['nearest_distance'].item() > .2
+    assert targets['voxel_positive'].item() is True
+    assert targets['positive'].item() is True
+    assert targets['labels'].item() == 1
+
+
+def test_default_positive_radius_is_half_voxel_diagonal():
+    pc_range = [0., 0., 0., .8, .8, .8]
+    # This point is in the neighbouring empty voxel but remains close enough
+    # to the occupied centre for the auxiliary proximity route.
+    points = torch.tensor([[[[.5125, .25, .25]]]])
+    gt = torch.full((1, 2, 2, 2), 3, dtype=torch.long)
+    gt[0, 0, 0, 0] = 1
+    with torch.no_grad():
+        targets = QM.future_memory_v2_occupancy_targets(
+            points, None, gt, pc_range, voxel_size=[.4, .4, .4],
+            empty_label=3, positive_radius=None)
+    assert targets['positive_radius'] == pytest.approx(
+        (3. ** .5) * .2)
+    assert targets['voxel_positive'].item() is False
+    assert targets['proximity_positive'].item() is True
+    assert targets['positive'].item() is True
+
+
+def test_binary_loss_balances_positive_and_negative_groups():
+    values = torch.tensor([2., 4., 10., 20., 30., 40.])
+    positive = torch.tensor([True, True, False, False, False, False])
+    valid = torch.ones_like(positive)
+    got = QM._balanced_binary_group_mean(
+        values, positive, valid,
+        positive_weight=1., negative_weight=1.)
+    assert torch.equal(got, torch.tensor(14.))
+    assert got != values.mean()
+
+
+def test_occupancy_anchor_is_zero_at_baseline_and_positive_after_shift():
+    semantic, occupancy, points, gt = _loss_inputs()
+    kwargs = dict(
+        pc_range=[0., 0., 0., 2., 2., 2.],
+        voxel_size=[1., 1., 1.], empty_label=17,
+        class_weights=[1.] * 17,
+        score_thresholds=[.35] * 15 + [.25, .30],
+        positive_radius=None)
+    with torch.no_grad():
+        same = QM.future_memory_v2_point_losses(
+            semantic, occupancy, points, None, gt,
+            baseline_occupancy_logits=occupancy.clone(), **kwargs)
+        shifted = QM.future_memory_v2_point_losses(
+            semantic, occupancy + 1., points, None, gt,
+            baseline_occupancy_logits=occupancy.clone(), **kwargs)
+    assert torch.equal(same['loss_occ_anchor'], torch.zeros(()))
+    assert shifted['loss_occ_anchor'] > 0
 
 
 def test_future_points_mask_excludes_masked_point_from_losses():
@@ -823,17 +889,22 @@ def test_point_occupancy_threshold_uses_head_score_thresholds():
             'positive_radius': 0.5, 'threshold_margin': 0.1},
         class_weights=torch.ones(3),
         empty_idx=3)
+    baseline_semantic = torch.randn(1, 1, 2, 3)
     method(
         model, torch.randn(1, 1, 2, 3),
         torch.zeros(1, 1, 2, 1),
         torch.full((1, 1, 2, 3), 0.25), None,
-        torch.full((1, 2, 2, 2), 3, dtype=torch.long))
+        torch.full((1, 2, 2, 2), 3, dtype=torch.long),
+        baseline_semantic)
     assert (
         captured['score_thresholds'] is
         model.pts_bbox_head.test_cfg['score_thr'])
     assert (
         captured['class_weights'] is
         model.pts_bbox_head.train_cfg['cls_weights'])
+    assert torch.equal(
+        captured['baseline_occupancy_logits'],
+        baseline_semantic.max(-1, keepdim=True).values)
 
 
 def test_sparseworld_v2_loss_method_accepts_config_list_forward():
@@ -1064,7 +1135,7 @@ def test_v2_loss_names_are_only_wired_for_1s_2s_3s():
     assert "((1, '1s'), (3, '2s')," in source
     assert "(5, '3s'))" in source
     for suffix in (
-            'loss_base_cls', 'loss_sem', 'loss_occ', 'loss_threshold',
-            'loss_soft_voxel', 'loss_pts'):
+            'loss_base_cls', 'loss_sem', 'loss_occ', 'loss_occ_anchor',
+            'loss_threshold', 'loss_soft_voxel', 'loss_pts'):
         assert f"mem_{{horizon_name}}.{suffix}" in source
     assert 'mem_0s.loss_sem' not in source

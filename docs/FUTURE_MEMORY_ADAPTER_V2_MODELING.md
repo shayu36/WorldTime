@@ -108,20 +108,38 @@ semantic 分支决定，是否越过类别阈值只由 occupancy 分支决定；
 mem_1s.loss_base_cls (1.0)
 mem_1s.loss_sem       (0.25)
 mem_1s.loss_occ       (0.25)
+mem_1s.loss_occ_anchor(0.05)
 mem_1s.loss_threshold (0.10)
 mem_1s.loss_soft_voxel(0.10)
 mem_1s.loss_pts       (0.50)
 ```
 
 `mem_2s.*`、`mem_3s.*` 同构。原始 future 分类损失作为 `loss_base_cls` 稳定锚点
-保留，原始 point matching 作为 `loss_pts` 保留。Occupancy 使用由 0.4m voxel size 推导的正样本
-半径（默认 0.20m）和 BCE-with-logits；semantic 只在可靠占据匹配点上使用现有
+保留，原始 point matching 作为 `loss_pts` 保留。Occupancy 正样本首先按最终评估
+一致的 0.4m GT 非空体素成员关系确定；对于刚好落在相邻空体素但仍接近 GT 的点，
+再使用非空体素中心的邻近条件补充。默认邻近半径由半体素三维对角线推导：
+`0.5 * ||voxel_size||_2 = 0.3464m`，不再使用只能覆盖立方体内切球的 0.20m。
+因此位于非空体素角落的点不会被错误监督为空。
+
+Occupancy BCE 和 threshold margin loss 分别计算正、负组内均值，再用配置中的
+`occupancy_{positive,negative}_weight` 与
+`threshold_{positive,negative}_weight` 融合，避免数量占优的负样本压低全部未来点。
+`loss_occ_anchor` 以 Smooth-L1 将独立 occupancy logit `O` 保守锚定到冻结 Baseline
+的 `max_c(S_base)`；其默认权重 0.05，小于 occupancy 主损失 0.25，仅抑制全局召回
+塌缩，不关闭可学习的 occupancy residual。semantic 只在可靠占据匹配点上使用现有
 类别权重；threshold loss 从 `pts_bbox_head.test_cfg.score_thr` 动态转换为
 logit 阈值。SoftVoxel 使用每个点周围 8 个连续坐标体素的三线性权重和 noisy-OR，
 只在预测体素与 GT 非空体素的稀疏并集上计算 Soft-IoU，保持对 semantic logits、
 occupancy logits 和连续点位置的梯度。
 
 0s 没有新增 Memory loss，0.5s、1.5s、2.5s 也不接入 V2 loss。
+
+这次修正源于前向评估中观察到的未来占据召回下降：旧的 0.20m 中心距离规则会把
+处于 0.4m 体素内部、但距中心大于 0.20m 的合法点当成负样本；独立 occupancy
+分支随后通过 `max(S_decode)=O` 将所有类别一起压到阈值以下。该现象属于训练目标与
+体素评估定义不一致，不是 semantic argmax 本身的错误。已有旧目标训练得到的 V2
+checkpoint 不会因代码修正而自动改变，后续验证应从冻结 Baseline checkpoint 启动
+新的 V2 训练。本文件不据此声称 IoU/mIoU 已提升。
 
 ## 8. Recurrence 隔离与冻结边界
 

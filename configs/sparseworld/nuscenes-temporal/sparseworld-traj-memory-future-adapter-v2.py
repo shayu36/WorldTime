@@ -43,13 +43,28 @@ future_memory_adapter_v2 = dict(
     dropout=0.0,
     voxel_size=(0.4, 0.4, 0.4),
     loss_occ_weight=0.25,
+    # Keep occupancy corrections close to the frozen Baseline unless the new
+    # voxel-aligned supervision provides evidence for a change.  This guards
+    # against a global future-recall collapse while leaving residual learning
+    # active.
+    loss_occ_anchor_weight=0.05,
     loss_sem_weight=0.25,
     loss_threshold_weight=0.10,
     loss_soft_voxel_weight=0.10,
     loss_base_cls_weight=1.0,
     loss_pts_weight=0.5,
     threshold_margin=0.10,
-    positive_radius=0.20,
+    # None derives half of the 3-D voxel diagonal (0.3464 m for 0.4 m cubic
+    # voxels). Exact non-empty voxel membership is always positive regardless
+    # of centre distance, matching the final voxel evaluator.
+    positive_radius=None,
+    # Positive and negative point groups are averaged independently before
+    # these weights are applied, preventing the much larger negative group
+    # from overwhelming occupancy and threshold supervision.
+    occupancy_positive_weight=1.0,
+    occupancy_negative_weight=1.0,
+    threshold_positive_weight=1.0,
+    threshold_negative_weight=1.0,
 )
 
 model = dict(

@@ -78,6 +78,11 @@ def parse_args():
     parser.add_argument(
         '--dump_dir', help='directory where results will be saved')
     parser.add_argument(
+        '--dump-only',
+        action='store_true',
+        help='write temporal predictions to dump_dir without gathering all '
+             'predictions in host memory or running dataset evaluation.')
+    parser.add_argument(
         '--gpu-collect',
         action='store_true',
         help='whether to use gpu to collect results.')
@@ -294,12 +299,15 @@ def main():
         # outputs = multi_gpu_test(model, data_loader, args.dump_dir,
         #                         args.gpu_collect
         #                         )
-        outputs = multi_gpu_test_temporal(model, data_loader, args.dump_dir,
-                                args.gpu_collect
-                                )
+        outputs = multi_gpu_test_temporal(
+            model, data_loader, args.dump_dir, gpu_collect=args.gpu_collect,
+            dump_only=args.dump_only)
 
 
 
+
+    if args.dump_only:
+        return
 
     rank, _ = get_dist_info()
     if rank == 0:

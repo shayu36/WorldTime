@@ -248,9 +248,14 @@ def collect_results_gpu(result_part, size):
         return ordered_results
 
 
-def multi_gpu_test_temporal(model, data_loader, dump_dir=None, tmpdir=None, gpu_collect=False):
+def multi_gpu_test_temporal(model, data_loader, dump_dir=None, tmpdir=None,
+                            gpu_collect=False, dump_only=False):
     model.eval()
-    results = []
+    # Temporal occupancy predictions are roughly 20 MB per sample.  Keeping
+    # all 4,000+ samples in ``results`` makes the rank-0 process allocate tens
+    # of GB before evaluation.  In dump-only mode the per-frame .npy files are
+    # the result store, so do not retain a second in-memory copy.
+    results = [] if not dump_only else None
     dataset = data_loader.dataset
     rank, world_size = get_dist_info()
     if rank == 0:
@@ -296,12 +301,20 @@ def multi_gpu_test_temporal(model, data_loader, dump_dir=None, tmpdir=None, gpu_
             # img_merged = merge_images(image_list, gap_width=10, size=[500,800])
             # cv2.imwrite(os.path.join(save_path, '%s.png'%frame_idx), img_merged)
 
-        results.extend(result)
+        if results is not None:
+            results.extend(result)
         if rank == 0:
             batch_size = len(result)
             for _ in range(batch_size * world_size):
                 prog_bar.update()
                 
+    if dump_only:
+        # Every rank must finish writing its frame files before the launcher
+        # exits; no large result gather is needed in this mode.
+        if dist.is_available() and dist.is_initialized():
+            dist.barrier()
+        return [] if rank == 0 else None
+
     # collect results from all ranks
     if gpu_collect:
         results = collect_results_gpu(results, len(dataset))

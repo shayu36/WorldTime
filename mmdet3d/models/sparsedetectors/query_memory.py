@@ -2484,11 +2484,162 @@ def sparse_soft_voxel_iou_loss(semantic_logits, occupancy_logits, points,
     return total / max(B, 1)
 
 
+def future_memory_v2_occupancy_targets(
+        points, points_mask, gt_voxel_semantics, pc_range,
+        voxel_size=(0.4, 0.4, 0.4), empty_label=17,
+        positive_radius=None):
+    """Build point occupancy targets consistent with voxel evaluation.
+
+    A point is positive when it already falls inside a non-empty GT voxel or
+    when it is close to the centre of a non-empty GT voxel.  Exact voxel
+    membership takes precedence for the semantic label.  The proximity route
+    keeps the original point-to-centre supervision for points just outside a
+    target voxel, but its default radius is the half diagonal of the voxel,
+    not half of one side.  Consequently, no point inside a non-empty voxel is
+    incorrectly trained as empty merely because it is near a voxel corner.
+    """
+    if points.dim() != 4 or points.shape[-1] != 3:
+        raise ValueError(
+            'points must have shape [B,Q,R,3], got '
+            f'{tuple(points.shape)}')
+    B, Q, R, _ = points.shape
+    device = points.device
+    gt_tensor = torch.as_tensor(
+        gt_voxel_semantics, device=device, dtype=torch.long)
+    if gt_tensor.dim() != 4 or gt_tensor.shape[0] != B:
+        raise ValueError(
+            'gt_voxel_semantics must have shape [B,X,Y,Z], got '
+            f'{tuple(gt_tensor.shape)}')
+    if points_mask is None:
+        points_mask = torch.ones(
+            B, Q, R, dtype=torch.bool, device=device)
+    else:
+        points_mask = points_mask.to(device=device, dtype=torch.bool)
+        if points_mask.shape != (B, Q, R):
+            raise ValueError(
+                'points_mask must have shape [B,Q,R], got '
+                f'{tuple(points_mask.shape)}')
+
+    metric = decode_points_metric(points, pc_range).float()
+    origin = torch.as_tensor(
+        pc_range[:3], device=device, dtype=torch.float32)
+    voxel_size = torch.as_tensor(
+        voxel_size, device=device, dtype=torch.float32).flatten()
+    if voxel_size.numel() != 3 or bool((voxel_size <= 0).any()):
+        raise ValueError('voxel_size must contain three positive values')
+    if positive_radius is None:
+        # The farthest location inside a voxel is half of its 3-D diagonal.
+        radius = float(torch.linalg.vector_norm(voxel_size).item()) * 0.5
+    else:
+        radius = float(positive_radius)
+        if radius < 0:
+            raise ValueError('positive_radius must be non-negative or None')
+
+    grid = torch.as_tensor(
+        gt_tensor.shape[1:4], device=device, dtype=torch.long)
+    index = torch.floor((metric - origin) / voxel_size).long()
+    inside = ((index >= 0) & (index < grid)).all(-1)
+    safe = index.clamp_min(0)
+    for dim in range(3):
+        safe[..., dim] = safe[..., dim].clamp_max(grid[dim] - 1)
+    batch = torch.arange(
+        B, device=device)[:, None, None].expand(B, Q, R)
+    voxel_labels = gt_tensor[
+        batch, safe[..., 0], safe[..., 1], safe[..., 2]]
+    valid = points_mask & inside & torch.isfinite(metric).all(-1)
+    voxel_positive = valid & (voxel_labels != int(empty_label))
+
+    nearest_dist = torch.full(
+        (B, Q, R), float('inf'), device=device)
+    nearest_label = torch.zeros(
+        (B, Q, R), dtype=torch.long, device=device)
+    for b in range(B):
+        gt_idx = torch.nonzero(
+            gt_tensor[b] != int(empty_label), as_tuple=False)
+        if gt_idx.numel() == 0:
+            continue
+        gt_centres = ((gt_idx.float() + 0.5) * voxel_size + origin)
+        gt_labels = gt_tensor[b][
+            gt_idx[:, 0], gt_idx[:, 1], gt_idx[:, 2]]
+        pred_flat = metric[b].reshape(-1, 3)
+        near = torch.full(
+            (pred_flat.shape[0],), float('inf'), device=device)
+        near_idx = torch.zeros(
+            pred_flat.shape[0], dtype=torch.long, device=device)
+        # Both axes are chunked; no point-by-all-GT matrix is retained.
+        for point_start in range(0, pred_flat.shape[0], 2048):
+            point_stop = min(pred_flat.shape[0], point_start + 2048)
+            local_dist = torch.full(
+                (point_stop - point_start,), float('inf'), device=device)
+            local_idx = torch.zeros(
+                point_stop - point_start, dtype=torch.long, device=device)
+            for gt_start in range(0, gt_centres.shape[0], 8192):
+                gt_stop = min(gt_centres.shape[0], gt_start + 8192)
+                distance = torch.cdist(
+                    pred_flat[point_start:point_stop],
+                    gt_centres[gt_start:gt_stop])
+                distance_min, distance_idx = distance.min(-1)
+                update = distance_min < local_dist
+                local_dist = torch.where(update, distance_min, local_dist)
+                local_idx = torch.where(
+                    update, distance_idx + gt_start, local_idx)
+            near[point_start:point_stop] = local_dist
+            near_idx[point_start:point_stop] = local_idx
+        nearest_dist[b] = near.reshape(Q, R)
+        nearest_label[b] = gt_labels[near_idx].reshape(Q, R)
+
+    proximity_positive = valid & (nearest_dist <= radius)
+    positive = voxel_positive | proximity_positive
+    # A point already inside a labelled voxel must use that exact class even
+    # if another class happens to have a closer neighbouring voxel centre.
+    target_labels = torch.where(
+        voxel_positive, voxel_labels, nearest_label)
+    return dict(
+        positive=positive, valid=valid, labels=target_labels,
+        voxel_positive=voxel_positive,
+        proximity_positive=proximity_positive,
+        nearest_distance=nearest_dist, positive_radius=radius)
+
+
+def _balanced_binary_group_mean(
+        values, positive, valid, positive_weight=1.0,
+        negative_weight=1.0):
+    """Average positive and negative groups without count domination."""
+    positive_weight = float(positive_weight)
+    negative_weight = float(negative_weight)
+    if positive_weight < 0 or negative_weight < 0:
+        raise ValueError('binary group weights must be non-negative')
+    if positive_weight == 0 and negative_weight == 0:
+        raise ValueError('at least one binary group weight must be positive')
+    positive_mask = valid & positive
+    negative_mask = valid & ~positive
+    value_dtype = values.dtype
+    positive_count = positive_mask.to(value_dtype).sum()
+    negative_count = negative_mask.to(value_dtype).sum()
+    positive_mean = (
+        (values * positive_mask.to(value_dtype)).sum() /
+        positive_count.clamp_min(1.))
+    negative_mean = (
+        (values * negative_mask.to(value_dtype)).sum() /
+        negative_count.clamp_min(1.))
+    positive_present = (positive_count > 0).to(value_dtype)
+    negative_present = (negative_count > 0).to(value_dtype)
+    normalizer = (
+        positive_weight * positive_present +
+        negative_weight * negative_present).clamp_min(_EPS)
+    return (
+        positive_weight * positive_present * positive_mean +
+        negative_weight * negative_present * negative_mean) / normalizer
+
+
 def future_memory_v2_point_losses(
         semantic_logits, occupancy_logits, points, points_mask,
         gt_voxel_semantics, pc_range, voxel_size=(0.4, 0.4, 0.4),
         empty_label=17, class_weights=None, score_thresholds=0.1,
-        positive_radius=None, threshold_margin=0.1):
+        positive_radius=None, threshold_margin=0.1,
+        occupancy_positive_weight=1.0, occupancy_negative_weight=1.0,
+        threshold_positive_weight=1.0, threshold_negative_weight=1.0,
+        baseline_occupancy_logits=None):
     """Compute V2 point and sparse-voxel losses without model state.
 
     This is the implementation used by SparseWorld4DTraj. Keeping it as a pure
@@ -2524,83 +2675,42 @@ def future_memory_v2_point_losses(
             'gt_voxel_semantics must have shape [B,X,Y,Z], got '
             f'{tuple(gt_tensor.shape)}')
 
-    metric = decode_points_metric(points, pc_range).float()
-    origin = torch.as_tensor(
-        pc_range[:3], device=device, dtype=torch.float32)
     voxel_size = torch.as_tensor(
         voxel_size, device=device, dtype=torch.float32).flatten()
     if voxel_size.numel() != 3 or (voxel_size <= 0).any():
         raise ValueError('voxel_size must contain three positive values')
-    grid = torch.as_tensor(
-        gt_tensor.shape[1:4], device=device, dtype=torch.long)
-    index = torch.floor((metric - origin) / voxel_size).long()
-    inside = ((index >= 0) & (index < grid)).all(-1)
-    safe = index.clamp_min(0)
-    for dim in range(3):
-        safe[..., dim] = safe[..., dim].clamp_max(grid[dim] - 1)
-    batch = torch.arange(
-        B, device=device)[:, None, None].expand(B, Q, R)
-    labels = gt_tensor[
-        batch, safe[..., 0], safe[..., 1], safe[..., 2]]
-    radius = (
-        float(voxel_size.max().item()) * 0.5
-        if positive_radius is None else float(positive_radius))
-    valid = points_mask & inside & torch.isfinite(metric).all(-1)
-
-    nearest_dist = torch.full(
-        (B, Q, R), float('inf'), device=device)
-    nearest_label = torch.zeros(
-        (B, Q, R), dtype=torch.long, device=device)
-    for b in range(B):
-        gt_idx = torch.nonzero(
-            gt_tensor[b] != int(empty_label), as_tuple=False)
-        if gt_idx.numel() == 0:
-            continue
-        gt_centres = (
-            (gt_idx.float() + 0.5) * voxel_size + origin)
-        gt_labels = gt_tensor[b][
-            gt_idx[:, 0], gt_idx[:, 1], gt_idx[:, 2]]
-        pred_flat = metric[b].reshape(-1, 3)
-        near = torch.full(
-            (pred_flat.shape[0],), float('inf'), device=device)
-        near_idx = torch.zeros(
-            pred_flat.shape[0], dtype=torch.long, device=device)
-        # Both axes are chunked; no point-by-all-GT matrix is retained.
-        for point_start in range(0, pred_flat.shape[0], 2048):
-            point_stop = min(
-                pred_flat.shape[0], point_start + 2048)
-            local_dist = torch.full(
-                (point_stop - point_start,), float('inf'),
-                device=device)
-            local_idx = torch.zeros(
-                point_stop - point_start, dtype=torch.long,
-                device=device)
-            for gt_start in range(0, gt_centres.shape[0], 8192):
-                gt_stop = min(
-                    gt_centres.shape[0], gt_start + 8192)
-                distance = torch.cdist(
-                    pred_flat[point_start:point_stop],
-                    gt_centres[gt_start:gt_stop])
-                distance_min, distance_idx = distance.min(-1)
-                update = distance_min < local_dist
-                local_dist = torch.where(
-                    update, distance_min, local_dist)
-                local_idx = torch.where(
-                    update, distance_idx + gt_start, local_idx)
-            near[point_start:point_stop] = local_dist
-            near_idx[point_start:point_stop] = local_idx
-        nearest_dist[b] = near.reshape(Q, R)
-        nearest_label[b] = gt_labels[near_idx].reshape(Q, R)
-
-    positive = valid & (nearest_dist <= radius)
-    labels = torch.where(positive, nearest_label, labels)
+    targets = future_memory_v2_occupancy_targets(
+        points, points_mask, gt_tensor, pc_range,
+        voxel_size=voxel_size, empty_label=empty_label,
+        positive_radius=positive_radius)
+    positive = targets['positive']
+    valid = targets['valid']
+    labels = targets['labels']
     occupancy_target = positive.to(dtype)
     occupancy = occupancy_logits.squeeze(-1)
-    valid_count = valid.to(dtype).sum().clamp_min(1.)
-    loss_occ = (
-        F.binary_cross_entropy_with_logits(
-            occupancy, occupancy_target, reduction='none') *
-        valid.to(dtype)).sum() / valid_count
+    occupancy_bce = F.binary_cross_entropy_with_logits(
+        occupancy, occupancy_target, reduction='none')
+    loss_occ = _balanced_binary_group_mean(
+        occupancy_bce, positive, valid,
+        positive_weight=occupancy_positive_weight,
+        negative_weight=occupancy_negative_weight)
+
+    if baseline_occupancy_logits is None:
+        loss_occ_anchor = occupancy_logits.sum() * 0.
+    else:
+        baseline_occupancy = torch.as_tensor(
+            baseline_occupancy_logits, device=device, dtype=dtype)
+        if baseline_occupancy.shape != expected_occupancy_shape:
+            raise ValueError(
+                'baseline_occupancy_logits must have shape '
+                f'{expected_occupancy_shape}, got '
+                f'{tuple(baseline_occupancy.shape)}')
+        anchor = F.smooth_l1_loss(
+            occupancy, baseline_occupancy.detach().squeeze(-1),
+            reduction='none')
+        loss_occ_anchor = (
+            (anchor * valid.to(dtype)).sum() /
+            valid.to(dtype).sum().clamp_min(1.))
 
     converted_weights = prepare_class_weights(
         class_weights, C, device, dtype)
@@ -2633,8 +2743,10 @@ def future_memory_v2_point_losses(
         positive,
         F.softplus(boundary + float(threshold_margin) - occupancy),
         F.softplus(occupancy - boundary + float(threshold_margin)))
-    loss_threshold = (
-        per_point_threshold * valid.to(dtype)).sum() / valid_count
+    loss_threshold = _balanced_binary_group_mean(
+        per_point_threshold, positive, valid,
+        positive_weight=threshold_positive_weight,
+        negative_weight=threshold_negative_weight)
     loss_voxel = sparse_soft_voxel_iou_loss(
         semantic_logits, occupancy_logits, points, gt_tensor,
         points_mask=points_mask, pc_range=pc_range,
@@ -2642,5 +2754,6 @@ def future_memory_v2_point_losses(
         class_weights=converted_weights)
     return dict(
         loss_sem=loss_sem, loss_occ=loss_occ,
+        loss_occ_anchor=loss_occ_anchor,
         loss_threshold=loss_threshold,
         loss_soft_voxel=loss_voxel)

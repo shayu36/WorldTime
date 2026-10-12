@@ -459,9 +459,14 @@ class SparseWorld4DTraj(OPUS):
                 self.future_memory_v2_loss_cfg = {
                     key: adapter_cfg.get(key) for key in (
                         'loss_occ_weight', 'loss_sem_weight',
+                        'loss_occ_anchor_weight',
                         'loss_threshold_weight', 'loss_soft_voxel_weight',
                         'loss_base_cls_weight', 'loss_pts_weight', 'threshold_margin',
-                        'positive_radius') if key in adapter_cfg}
+                        'positive_radius',
+                        'occupancy_positive_weight',
+                        'occupancy_negative_weight',
+                        'threshold_positive_weight',
+                        'threshold_negative_weight') if key in adapter_cfg}
                 adapter_cfg.setdefault('embed_dims', query_embed_dims)
                 adapter_cfg.setdefault('num_classes', 17)
                 adapter_cfg.setdefault('num_points', self.num_refines)
@@ -791,8 +796,9 @@ class SparseWorld4DTraj(OPUS):
             outputs['future_memory_v2_graph_anchor'] = v2_graph_anchor
         return outputs
 
-    def _future_memory_v2_losses(self, semantic_logits, occupancy_logits,
-                                  points, points_mask, gt_voxel_semantics):
+    def _future_memory_v2_losses(
+            self, semantic_logits, occupancy_logits, points, points_mask,
+            gt_voxel_semantics, baseline_semantic_logits=None):
         """Compute point occupancy/semantic and sparse voxel losses."""
         voxel_size = getattr(self.pts_bbox_head, 'voxel_size',
                              (0.4, 0.4, 0.4))
@@ -802,6 +808,10 @@ class SparseWorld4DTraj(OPUS):
         class_weights = (configured_weights if configured_weights is not None
                          else getattr(self, 'class_weights', None))
         score_thr = self.pts_bbox_head.test_cfg.get('score_thr', 0.1)
+        baseline_occupancy_logits = None
+        if baseline_semantic_logits is not None:
+            baseline_occupancy_logits = baseline_semantic_logits.max(
+                dim=-1, keepdim=True).values.detach()
         return future_memory_v2_point_losses(
             semantic_logits, occupancy_logits, points, points_mask,
             gt_voxel_semantics, pc_range=self.pc_range,
@@ -810,7 +820,16 @@ class SparseWorld4DTraj(OPUS):
             class_weights=class_weights,
             score_thresholds=score_thr,
             positive_radius=loss_cfg.get('positive_radius', None),
-            threshold_margin=float(loss_cfg.get('threshold_margin', 0.1)))
+            threshold_margin=float(loss_cfg.get('threshold_margin', 0.1)),
+            occupancy_positive_weight=float(loss_cfg.get(
+                'occupancy_positive_weight', 1.0)),
+            occupancy_negative_weight=float(loss_cfg.get(
+                'occupancy_negative_weight', 1.0)),
+            threshold_positive_weight=float(loss_cfg.get(
+                'threshold_positive_weight', 1.0)),
+            threshold_negative_weight=float(loss_cfg.get(
+                'threshold_negative_weight', 1.0)),
+            baseline_occupancy_logits=baseline_occupancy_logits)
 
     def refine_points(self, points_proposal, points_delta):
         B, Q = points_delta.shape[:2]
@@ -1948,11 +1967,13 @@ class SparseWorld4DTraj(OPUS):
                         outputs['forecast_occupancy_logits_list'][step_index],
                         forecast_points_list[step_index],
                         forecast_points_mask_list[step_index],
-                        voxel_semantics_temporal[step_index])
+                        voxel_semantics_temporal[step_index],
+                        outputs['baseline_forecast_semantics_list'][step_index])
                     cfg = self.future_memory_v2_loss_cfg
                     losses[f'mem_{horizon_name}.loss_base_cls'] = raw['fu1.loss_cls'] * float(cfg.get('loss_base_cls_weight', 1.0))
                     losses[f'mem_{horizon_name}.loss_sem'] = v2['loss_sem'] * float(cfg.get('loss_sem_weight', 0.25))
                     losses[f'mem_{horizon_name}.loss_occ'] = v2['loss_occ'] * float(cfg.get('loss_occ_weight', 0.25))
+                    losses[f'mem_{horizon_name}.loss_occ_anchor'] = v2['loss_occ_anchor'] * float(cfg.get('loss_occ_anchor_weight', 0.05))
                     losses[f'mem_{horizon_name}.loss_threshold'] = v2['loss_threshold'] * float(cfg.get('loss_threshold_weight', 0.1))
                     losses[f'mem_{horizon_name}.loss_soft_voxel'] = v2['loss_soft_voxel'] * float(cfg.get('loss_soft_voxel_weight', 0.1))
                     losses[f'mem_{horizon_name}.loss_pts'] = raw['fu1.loss_pts'] * float(cfg.get('loss_pts_weight', 0.5))
