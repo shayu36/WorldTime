@@ -1676,12 +1676,17 @@ class FutureMemoryAdapter(nn.Module):
                     attention_query=q_input, diagnostics=diagnostics)
 
 
-def decode_semantic_occupancy_logits(base_logits, delta_s, delta_o, gate):
+def decode_semantic_occupancy_logits(base_logits, delta_s, delta_o, gate,
+                                    occupancy_gate=None):
     """Compose V2 semantic and occupancy residuals for legacy decoding."""
     if gate.dim() == delta_s.dim() - 1:
         gate = gate.unsqueeze(-1)
     s_sem = base_logits + gate * delta_s
-    occupancy = base_logits.max(dim=-1, keepdim=True).values + gate * delta_o
+    if occupancy_gate is None:
+        occupancy_gate = gate
+    elif occupancy_gate.dim() == delta_o.dim() - 1:
+        occupancy_gate = occupancy_gate.unsqueeze(-1)
+    occupancy = base_logits.max(dim=-1, keepdim=True).values + occupancy_gate * delta_o
     s_decode = s_sem + (occupancy - s_sem.max(dim=-1, keepdim=True).values)
     return s_sem, occupancy, s_decode
 
@@ -1705,12 +1710,19 @@ class FutureMemoryAdapterV2(nn.Module):
                  coarse_geometry_context_weight=0.5,
                  point_geometry_head_fraction=0.5,
                  gate_bias=-1.0, dropout=0.0, pc_range=None,
-                 voxel_size=(0.4, 0.4, 0.4), **kwargs):
+                 voxel_size=(0.4, 0.4, 0.4), gate_mode='shared',
+                 horizon_gate_bias=False, **kwargs):
         super().__init__()
         del kwargs
         if int(embed_dims) % int(num_heads) != 0:
             raise ValueError('FutureMemoryAdapterV2 requires embed_dims % num_heads == 0')
         self.embed_dims = int(embed_dims)
+        if gate_mode not in ('shared', 'task_split'):
+            raise ValueError('gate_mode must be shared or task_split')
+        if horizon_gate_bias and gate_mode != 'task_split':
+            raise ValueError('horizon_gate_bias requires task_split')
+        self.gate_mode = gate_mode
+        self.use_horizon_gate_bias = bool(horizon_gate_bias)
         self.num_classes = int(num_classes)
         self.num_points = int(num_points)
         self.num_heads = int(num_heads)
@@ -1790,6 +1802,29 @@ class FutureMemoryAdapterV2(nn.Module):
         self.dropout = nn.Dropout(float(dropout))
         self._init_parameters(gate_bias)
 
+        # Keep gate_head as the semantic head so shared-mode checkpoint keys
+        # and initialisation remain unchanged. A adds two independent heads.
+        if self.gate_mode == 'task_split':
+            self.gate_occ_head = nn.Linear(self.embed_dims, 1)
+            self.gate_pos_head = nn.Linear(self.embed_dims, 1)
+            self.gate_occ_head.load_state_dict(self.gate_head.state_dict())
+            self.gate_pos_head.load_state_dict(self.gate_head.state_dict())
+        if self.use_horizon_gate_bias:
+            # [horizon, task], task order = semantic, occupancy, position.
+            self.task_horizon_bias = nn.Parameter(
+                torch.zeros(len(self.HORIZON_SECONDS), 3))
+    def task_gates(self, adapted, horizon_id):
+        """Return independent semantic, occupancy and position point gates."""
+        if self.gate_mode == 'shared':
+            gate = torch.sigmoid(self.gate_head(adapted))
+            return gate, gate, gate
+        logits = (self.gate_head(adapted), self.gate_occ_head(adapted),
+                  self.gate_pos_head(adapted))
+        if self.use_horizon_gate_bias:
+            bias = self.task_horizon_bias[horizon_id].to(adapted.dtype)
+            logits = tuple(value + bias[i] for i, value in enumerate(logits))
+        return tuple(torch.sigmoid(value) for value in logits)
+
     def _init_parameters(self, gate_bias):
         for layer in (self.query_proj, self.key_proj, self.value_proj,
                       self.out_proj, self.point_query_proj,
@@ -1809,12 +1844,18 @@ class FutureMemoryAdapterV2(nn.Module):
     def _empty(self, query_feat, horizon_id):
         B, Q, _ = query_feat.shape
         z = query_feat.new_zeros
+        empty_gate = z(B, Q, self.num_points, 1)
+        if self.gate_mode == 'task_split' and torch.is_grad_enabled():
+            # A completely empty Memory rank must still join DDP reductions.
+            anchor = sum(p.reshape(-1)[0] * 0. for p in self.parameters())
+            empty_gate = empty_gate + anchor
         return dict(
             delta_s=z(B, Q, self.num_points, self.num_classes),
             delta_o=z(B, Q, self.num_points, 1),
             delta_p=z(B, Q, self.num_points, 3),
-            gate=z(B, Q, self.num_points, 1),
-            point_gate=z(B, Q, self.num_points, 1),
+            gate=empty_gate,
+            gate_sem=empty_gate, gate_occ=empty_gate, gate_pos=empty_gate,
+            point_gate=empty_gate,
             context=z(B, Q, self.num_points, self.embed_dims),
             point_context=z(B, Q, self.num_points, self.embed_dims),
             attention_query=z(B, Q, self.num_points, self.embed_dims),
@@ -2332,6 +2373,8 @@ class FutureMemoryAdapterV2(nn.Module):
         delta_o = query_feat.new_zeros(B, Q, self.num_points, 1)
         delta_p = query_feat.new_zeros(B, Q, self.num_points, 3)
         gate = query_feat.new_zeros(B, Q, self.num_points, 1)
+        gate_occ = query_feat.new_zeros(B, Q, self.num_points, 1)
+        gate_pos = torch.zeros_like(gate_occ)
         for start in range(0, Q, self.query_chunk_size):
             stop = min(Q, start + self.query_chunk_size)
             adapter_input = torch.cat([
@@ -2352,15 +2395,21 @@ class FutureMemoryAdapterV2(nn.Module):
             delta_s[:, start:stop] = self.delta_s_head(adapted)
             delta_o[:, start:stop] = self.delta_o_head(adapted)
             delta_p[:, start:stop] = self.delta_p_head(adapted)
-            gate[:, start:stop] = torch.sigmoid(self.gate_head(adapted))
+            gs, go, gp = self.task_gates(adapted, horizon_id)
+            gate[:, start:stop] = gs
+            gate_occ[:, start:stop] = go
+            gate_pos[:, start:stop] = gp
         point_mask = has.unsqueeze(-1).to(gate.dtype)
         delta_s = delta_s * point_mask
         delta_o = delta_o * point_mask
         delta_p = delta_p * point_mask
         gate = gate * point_mask
+        gate_occ = gate_occ * point_mask
+        gate_pos = gate_pos * point_mask
         if not return_diagnostics:
             return dict(delta_s=delta_s, delta_o=delta_o, delta_p=delta_p,
-                        gate=gate, point_gate=gate)
+                        gate=gate, point_gate=gate, gate_sem=gate,
+                        gate_occ=gate_occ, gate_pos=gate_pos)
 
         diagnostics = dict(has_candidate=has,
                            eligible_point_count=eligible_counts.detach(),
@@ -2406,8 +2455,12 @@ class FutureMemoryAdapterV2(nn.Module):
         # snapshots while the returned residuals retain their gradients.
         diagnostics['point_context'] = context.detach()
         diagnostics['point_gate'] = gate.detach()
+        diagnostics['gate_sem'] = gate.detach()
+        diagnostics['gate_occ'] = gate_occ.detach()
+        diagnostics['gate_pos'] = gate_pos.detach()
         return dict(delta_s=delta_s, delta_o=delta_o, delta_p=delta_p,
                     gate=gate, point_gate=gate, context=context,
+                    gate_sem=gate, gate_occ=gate_occ, gate_pos=gate_pos,
                     point_context=context, attention_query=attention_query,
                     diagnostics=diagnostics)
 
@@ -2416,12 +2469,18 @@ def sparse_soft_voxel_iou_loss(semantic_logits, occupancy_logits, points,
                                gt_voxel_semantics, points_mask=None,
                                pc_range=(-40., -40., -1., 40., 40., 5.4),
                                voxel_size=(0.4, 0.4, 0.4), num_classes=17,
-                               class_weights=None, eps=1e-6):
+                               class_weights=None, eps=1e-6,
+                               voxel_center_offset=0.0,
+                               renormalize_valid_corners=False):
     """Sparse, differentiable noisy-OR Soft-IoU over trilinear voxels.
 
     Only eight neighbours per valid point and the union with non-empty GT
     voxels are materialised.  This avoids a dense ``B*200*200*16*17`` tensor
     while retaining gradients through continuous point positions.
+
+    The legacy grid uses corner indices (offset 0). The experimental
+    centre-aligned variant uses offset 0.5 so index k represents the centre
+    of GT voxel k. The default preserves existing V2 training behavior.
     """
     B, Q, R, C = semantic_logits.shape
     device = semantic_logits.device
@@ -2451,14 +2510,26 @@ def sparse_soft_voxel_iou_loss(semantic_logits, occupancy_logits, points,
         pp = probs[b].reshape(-1, num_classes)
         valid = points_mask[b].reshape(-1).bool() & torch.isfinite(p).all(-1)
         p, pp = p[valid], pp[valid]
-        coord = (p - origin) / vs
+        coord = (p - origin) / vs - float(voxel_center_offset)
         base = torch.floor(coord).long()
         frac = (coord - base.float()).clamp(0., 1.)
         idx = base[:, None, :] + offsets[None]
         inside = ((idx >= 0) & (idx < grid)).all(-1)
+        if renormalize_valid_corners:
+            # Hard decoding ignores points outside the scene. A slightly
+            # outside point must not be snapped back onto a boundary voxel.
+            point_inside = ((p >= origin) & (p < origin + grid * vs)).all(-1)
+            inside = inside & point_inside[:, None]
         corner_w = torch.stack([
             torch.where(offsets[:, d].bool(), frac[:, None, d], 1. - frac[:, None, d])
             for d in range(3)], dim=-1).prod(-1)
+        if renormalize_valid_corners:
+            # At the scene boundary, discard out-of-grid neighbours and keep
+            # the probability mass of valid points on the remaining corners.
+            # Fully out-of-grid points have zero mass and stay ignored.
+            corner_w = corner_w * inside.to(corner_w.dtype)
+            mass = corner_w.sum(-1, keepdim=True)
+            corner_w = corner_w / mass.clamp_min(eps)
         lin = idx[..., 0] * grid[1] * grid[2] + idx[..., 1] * grid[2] + idx[..., 2]
         pred_lin = lin[inside]
         union = torch.unique(torch.cat([pred_lin, gt_lin])) if (pred_lin.numel() or gt_lin.numel()) else pred_lin
@@ -2639,7 +2710,8 @@ def future_memory_v2_point_losses(
         positive_radius=None, threshold_margin=0.1,
         occupancy_positive_weight=1.0, occupancy_negative_weight=1.0,
         threshold_positive_weight=1.0, threshold_negative_weight=1.0,
-        baseline_occupancy_logits=None):
+        baseline_occupancy_logits=None, soft_voxel_center_offset=0.0,
+        soft_voxel_renormalize_valid_corners=False):
     """Compute V2 point and sparse-voxel losses without model state.
 
     This is the implementation used by SparseWorld4DTraj. Keeping it as a pure
@@ -2751,7 +2823,9 @@ def future_memory_v2_point_losses(
         semantic_logits, occupancy_logits, points, gt_tensor,
         points_mask=points_mask, pc_range=pc_range,
         voxel_size=voxel_size, num_classes=C,
-        class_weights=converted_weights)
+        class_weights=converted_weights,
+        voxel_center_offset=soft_voxel_center_offset,
+        renormalize_valid_corners=soft_voxel_renormalize_valid_corners)
     return dict(
         loss_sem=loss_sem, loss_occ=loss_occ,
         loss_occ_anchor=loss_occ_anchor,

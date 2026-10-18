@@ -466,7 +466,9 @@ class SparseWorld4DTraj(OPUS):
                         'occupancy_positive_weight',
                         'occupancy_negative_weight',
                         'threshold_positive_weight',
-                        'threshold_negative_weight') if key in adapter_cfg}
+                        'threshold_negative_weight',
+                        'soft_voxel_center_offset',
+                        'soft_voxel_renormalize_valid_corners') if key in adapter_cfg}
                 adapter_cfg.setdefault('embed_dims', query_embed_dims)
                 adapter_cfg.setdefault('num_classes', 17)
                 adapter_cfg.setdefault('num_points', self.num_refines)
@@ -607,7 +609,7 @@ class SparseWorld4DTraj(OPUS):
 
         def _run_adapter(*adapter_args, **adapter_kwargs):
             if adapter_is_v2 and self.training and v2_activation_checkpoint:
-                # Training losses use only the four residual tensors. Large
+                # Return residuals and task gates through checkpointing. Large
                 # audit diagnostics are omitted from the checkpointed pass.
                 # Non-reentrant checkpointing supports frozen tensor inputs
                 # while still producing gradients for V2 parameters, and it
@@ -624,13 +626,16 @@ class SparseWorld4DTraj(OPUS):
                         target_ego2global=target_pose,
                         return_diagnostics=False)
                     return (output['delta_s'], output['delta_o'],
-                            output['delta_p'], output['gate'])
+                            output['delta_p'], output['gate'],
+                            output.get('gate_occ', output['gate']),
+                            output.get('gate_pos', output['gate']))
 
-                delta_s, delta_o, delta_p, gate = checkpoint(
+                delta_s, delta_o, delta_p, gate, gate_occ, gate_pos = checkpoint(
                     _checkpointed_adapter, query_arg, points_arg, logits_arg,
                     use_reentrant=False, preserve_rng_state=True)
                 return dict(delta_s=delta_s, delta_o=delta_o,
                             delta_p=delta_p, gate=gate, point_gate=gate,
+                            gate_sem=gate, gate_occ=gate_occ, gate_pos=gate_pos,
                             diagnostics={})
             if not (adapter_is_v2 and self.training and v2_save_on_cpu):
                 return adapter_module(*adapter_args, **adapter_kwargs)
@@ -698,16 +703,20 @@ class SparseWorld4DTraj(OPUS):
                         target_ego2global=target_ego2global)
                 if adapter_is_v2:
                     v2_graph_anchor = v2_graph_anchor + (
-                        result['delta_s'].sum() + result['delta_o'].sum() +
-                        result['delta_p'].sum() + result['gate'].sum()) * 0.0
+                        result['delta_s'].float().sum() + result['delta_o'].float().sum() +
+                        result['delta_p'].float().sum() + result['gate'].float().sum() +
+                        result.get('gate_occ', result['gate']).float().sum() +
+                        result.get('gate_pos', result['gate']).float().sum()) * 0.0
                 gate = result['gate']
+                gate_occ = result.get('gate_occ', gate)
+                gate_pos = result.get('gate_pos', gate)
                 if adapter_is_v2:
                     # Keep semantic ordering and occupancy thresholding as
                     # separate quantities, then adapt to the legacy decoder.
                     sem_logits, occ_logits, output_cls = \
                         decode_semantic_occupancy_logits(
                             base_cls_snapshot, result['delta_s'],
-                            result['delta_o'], gate)
+                            result['delta_o'], gate, occupancy_gate=gate_occ)
                 else:
                     sem_logits = base_cls_snapshot + gate[..., None] * result['delta_s']
                     occ_logits = base_cls_snapshot.max(-1, keepdim=True).values + gate[..., None] * result['delta_o']
@@ -722,13 +731,13 @@ class SparseWorld4DTraj(OPUS):
                 # decode the already-refined Baseline points, add only the
                 # gated Memory delta, then encode back without another mean.
                 gated_delta = (
-                    gate * result['delta_p'] if adapter_is_v2 else
+                    gate_pos * result['delta_p'] if adapter_is_v2 else
                     gate[..., None] * result['delta_p'])
                 active_position_mask = None
                 if adapter_is_v2:
                     active_position_mask = result.get(
                         'diagnostics', {}).get('has_candidate')
-                    gate_active = gate.squeeze(-1) != 0
+                    gate_active = gate_pos.squeeze(-1) != 0
                     active_position_mask = (
                         gate_active if active_position_mask is None else
                         active_position_mask & gate_active)
@@ -747,6 +756,33 @@ class SparseWorld4DTraj(OPUS):
                 if adapter_is_v2:
                     diag['semantic_logits'] = sem_logits.detach()
                     diag['occupancy_logits'] = occ_logits.detach()
+                    if getattr(adapter_module, 'gate_mode', 'shared') == 'task_split':
+                        # Compact detached statistics only; valid-candidate
+                        # points exclude the forced-zero fallback gates.
+                        with torch.no_grad():
+                            valid = ((gate != 0).any(-1, keepdim=True) |
+                                     (gate_occ != 0) | (gate_pos != 0))
+                            den = valid.float().sum().clamp_min(1.)
+                            stats = {'candidate_fraction': valid.float().mean()}
+                            for name, task_gate, residual in (
+                                    ('sem', gate, result['delta_s']),
+                                    ('occ', gate_occ, result['delta_o']),
+                                    ('pos', gate_pos, result['delta_p'])):
+                                values = task_gate.detach().float()
+                                gate_den = den * values.shape[-1]
+                                mean = (values * valid).sum() / gate_den
+                                stats[f'gate_{name}_mean'] = mean
+                                stats[f'gate_{name}_std'] = (
+                                    ((values - mean).square() * valid).sum() / gate_den).sqrt()
+                                correction = values * residual.detach().float()
+                                magnitude = (correction.norm(dim=-1, keepdim=True)
+                                             if name == 'pos' else
+                                             correction.abs().mean(-1, keepdim=True))
+                                stats[f'correction_{name}_abs'] = (magnitude * valid).sum() / den
+                            stats['occupancy_shift'] = (
+                                (occ_logits - base_cls_snapshot.max(-1, keepdim=True).values)
+                                .float() * valid).sum() / den
+                            diag['task_gate_stats'] = stats
             forecast_semantics_list.append(output_cls)
             if adapter_is_v2:
                 # The lists are consumed by V2 losses; non-target steps use
@@ -829,7 +865,11 @@ class SparseWorld4DTraj(OPUS):
                 'threshold_positive_weight', 1.0)),
             threshold_negative_weight=float(loss_cfg.get(
                 'threshold_negative_weight', 1.0)),
-            baseline_occupancy_logits=baseline_occupancy_logits)
+            baseline_occupancy_logits=baseline_occupancy_logits,
+            soft_voxel_center_offset=float(loss_cfg.get(
+                'soft_voxel_center_offset', 0.0)),
+            soft_voxel_renormalize_valid_corners=bool(loss_cfg.get(
+                'soft_voxel_renormalize_valid_corners', False)))
 
     def refine_points(self, points_proposal, points_delta):
         B, Q = points_delta.shape[:2]
@@ -1977,6 +2017,11 @@ class SparseWorld4DTraj(OPUS):
                     losses[f'mem_{horizon_name}.loss_threshold'] = v2['loss_threshold'] * float(cfg.get('loss_threshold_weight', 0.1))
                     losses[f'mem_{horizon_name}.loss_soft_voxel'] = v2['loss_soft_voxel'] * float(cfg.get('loss_soft_voxel_weight', 0.1))
                     losses[f'mem_{horizon_name}.loss_pts'] = raw['fu1.loss_pts'] * float(cfg.get('loss_pts_weight', 0.5))
+                    for name, value in outputs.get(
+                            'memory_adapter_diagnostics', [{}] * num_fu_frames
+                    )[step_index].get('task_gate_stats', {}).items():
+                        # No 'loss' token: logging only, not an objective.
+                        losses[f'mem_{horizon_name}.{name}'] = value.detach()
                 else:
                     losses[f'mem_{horizon_name}.loss_cls'] = raw['fu1.loss_cls']
                     losses[f'mem_{horizon_name}.loss_pts'] = raw['fu1.loss_pts']
