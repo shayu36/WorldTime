@@ -1,4 +1,5 @@
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -2674,7 +2675,7 @@ def future_memory_v2_occupancy_targets(
 
 def _balanced_binary_group_mean(
         values, positive, valid, positive_weight=1.0,
-        negative_weight=1.0):
+        negative_weight=1.0, positive_mean_override=None):
     """Average positive and negative groups without count domination."""
     positive_weight = float(positive_weight)
     negative_weight = float(negative_weight)
@@ -2690,6 +2691,8 @@ def _balanced_binary_group_mean(
     positive_mean = (
         (values * positive_mask.to(value_dtype)).sum() /
         positive_count.clamp_min(1.))
+    if positive_mean_override is not None:
+        positive_mean = positive_mean_override
     negative_mean = (
         (values * negative_mask.to(value_dtype)).sum() /
         negative_count.clamp_min(1.))
@@ -2703,6 +2706,100 @@ def _balanced_binary_group_mean(
         negative_weight * negative_present * negative_mean) / normalizer
 
 
+def validate_occupancy_class_balance_beta(beta_by_horizon):
+    """Validate the opt-in loss-only mapping without changing its config."""
+    if not isinstance(beta_by_horizon, Mapping):
+        raise ValueError('occupancy_positive_class_balance_beta must be a '
+                         'mapping keyed by 1s, 2s, or 3s')
+    normalized = {}
+    for horizon, value in beta_by_horizon.items():
+        if horizon not in ('1s', '2s', '3s'):
+            raise ValueError(f'Unknown occupancy class-balance horizon: {horizon!r}')
+        beta = float(value)
+        if not math.isfinite(beta) or not 0. <= beta <= 1.:
+            raise ValueError(f'Occupancy class-balance beta for {horizon} '
+                             f'must be finite and in [0, 1], got {value!r}')
+        normalized[horizon] = beta
+    return normalized
+
+
+def class_balanced_occupancy_bce(
+        values, positive, valid, labels, num_classes, beta,
+        positive_weight=1.0, negative_weight=1.0,
+        voxel_positive=None, return_diagnostics=False):
+    """Mix positive point/class means; retain the original negative mean.
+
+    All inputs except scalars have shape [B,Q,R]. Class means use *GT target*
+    labels, not predicted classes or semantic class weights. Only classes
+    present among valid positives participate. Reduction is rank-local over
+    the whole local batch, like the existing positive/negative group means;
+    DDP subsequently averages rank losses. No dense [points, classes] tensor
+    or extra distributed collective is needed.
+    """
+    beta = float(beta)
+    if not math.isfinite(beta) or not 0. <= beta <= 1.:
+        raise ValueError(f'Occupancy class-balance beta must be finite and '
+                         f'in [0, 1], got {beta!r}')
+    if beta == 0. and not return_diagnostics:
+        # Exact legacy reduction, including its dtype and operation order.
+        return _balanced_binary_group_mean(
+            values, positive, valid, positive_weight, negative_weight), {}
+    if num_classes <= 0:
+        raise ValueError('num_classes must be positive')
+    if any(t.shape != values.shape for t in (positive, valid, labels)):
+        raise ValueError('occupancy values, masks and labels must have matching shapes')
+    pos_mask = positive & valid
+    neg_mask = ~positive & valid
+    class_ids = labels[pos_mask].long()
+    if bool(((class_ids < 0) | (class_ids >= num_classes)).any()):
+        raise ValueError(f'Positive occupancy GT labels must be in [0, {num_classes})')
+    # FP32 accumulation avoids count/sum overflow for FP16 local batches.
+    # Preserve double precision when explicitly supplied by a pure-function test.
+    acc = values if values.dtype == torch.float64 else values.float()
+    class_count = torch.bincount(class_ids, minlength=num_classes)
+    class_sum = acc.new_zeros(num_classes).scatter_add(0, class_ids, acc[pos_mask])
+    present = class_count > 0
+    class_means = class_sum / class_count.clamp_min(1).to(acc.dtype)
+    class_mean = class_means.sum() / present.sum().clamp_min(1).to(acc.dtype)
+    point_mean = acc[pos_mask].sum() / pos_mask.sum().clamp_min(1).to(acc.dtype)
+    mixed_mean = (1. - beta) * point_mean + beta * class_mean
+    if beta == 0.:
+        loss = _balanced_binary_group_mean(
+            values, positive, valid, positive_weight, negative_weight)
+    else:
+        loss = _balanced_binary_group_mean(
+            acc, positive, valid, positive_weight, negative_weight,
+            positive_mean_override=mixed_mean)
+    if not return_diagnostics:
+        return loss, {}
+    if voxel_positive is None or voxel_positive.shape != values.shape:
+        raise ValueError('voxel_positive with matching shape is required for diagnostics')
+    exact_mask = pos_mask & voxel_positive
+    # Proximity positives can overlap exact positives; count ONLY their
+    # complement so exact + proximity-only == total, for every class.
+    exact_count = torch.bincount(labels[exact_mask].long(), minlength=num_classes)
+    proximity_only_count = class_count - exact_count
+    stats = dict(
+        occ_class_balance_beta=acc.new_tensor(beta),
+        occ_positive_count=pos_mask.sum(),
+        occ_negative_count=neg_mask.sum(),
+        occ_positive_present_classes=present.sum(),
+        occ_positive_voxel_count=exact_count.sum(),
+        occ_positive_proximity_only_count=proximity_only_count.sum(),
+        occ_positive_bce_point_mean=point_mean,
+        occ_positive_bce_class_mean=class_mean,
+        occ_positive_bce_mixed_mean=mixed_mean,
+        occ_negative_bce_mean=(acc[neg_mask].sum() /
+                               neg_mask.sum().clamp_min(1).to(acc.dtype)))
+    for c in range(num_classes):
+        stats[f'occ_positive_count_c{c}'] = class_count[c]
+        stats[f'occ_positive_voxel_count_c{c}'] = exact_count[c]
+        stats[f'occ_positive_proximity_only_count_c{c}'] = proximity_only_count[c]
+    # Logging only: no 'loss' token, no graph retention, fixed keys even for
+    # empty masks/classes on one DDP rank. MMCV logs rank-averaged counts.
+    return loss, {key: value.detach().float() for key, value in stats.items()}
+
+
 def future_memory_v2_point_losses(
         semantic_logits, occupancy_logits, points, points_mask,
         gt_voxel_semantics, pc_range, voxel_size=(0.4, 0.4, 0.4),
@@ -2711,7 +2808,9 @@ def future_memory_v2_point_losses(
         occupancy_positive_weight=1.0, occupancy_negative_weight=1.0,
         threshold_positive_weight=1.0, threshold_negative_weight=1.0,
         baseline_occupancy_logits=None, soft_voxel_center_offset=0.0,
-        soft_voxel_renormalize_valid_corners=False):
+        soft_voxel_renormalize_valid_corners=False,
+        occupancy_positive_class_balance_beta=0.0,
+        occupancy_class_balance_diagnostics=False):
     """Compute V2 point and sparse-voxel losses without model state.
 
     This is the implementation used by SparseWorld4DTraj. Keeping it as a pure
@@ -2762,10 +2861,21 @@ def future_memory_v2_point_losses(
     occupancy = occupancy_logits.squeeze(-1)
     occupancy_bce = F.binary_cross_entropy_with_logits(
         occupancy, occupancy_target, reduction='none')
-    loss_occ = _balanced_binary_group_mean(
-        occupancy_bce, positive, valid,
-        positive_weight=occupancy_positive_weight,
-        negative_weight=occupancy_negative_weight)
+    occ_diagnostics = {}
+    if (occupancy_positive_class_balance_beta != 0. or
+            occupancy_class_balance_diagnostics):
+        loss_occ, occ_diagnostics = class_balanced_occupancy_bce(
+            occupancy_bce, positive, valid, labels, C,
+            beta=occupancy_positive_class_balance_beta,
+            positive_weight=occupancy_positive_weight,
+            negative_weight=occupancy_negative_weight,
+            voxel_positive=targets['voxel_positive'],
+            return_diagnostics=occupancy_class_balance_diagnostics)
+    else:
+        loss_occ = _balanced_binary_group_mean(
+            occupancy_bce, positive, valid,
+            positive_weight=occupancy_positive_weight,
+            negative_weight=occupancy_negative_weight)
 
     if baseline_occupancy_logits is None:
         loss_occ_anchor = occupancy_logits.sum() * 0.
@@ -2826,8 +2936,11 @@ def future_memory_v2_point_losses(
         class_weights=converted_weights,
         voxel_center_offset=soft_voxel_center_offset,
         renormalize_valid_corners=soft_voxel_renormalize_valid_corners)
-    return dict(
+    losses = dict(
         loss_sem=loss_sem, loss_occ=loss_occ,
         loss_occ_anchor=loss_occ_anchor,
         loss_threshold=loss_threshold,
         loss_soft_voxel=loss_voxel)
+    if occupancy_class_balance_diagnostics:
+        losses['occupancy_diagnostics'] = occ_diagnostics
+    return losses

@@ -1,0 +1,70 @@
+{
+  "snapshot": "now-best-before-check",
+  "model": "Future Memory Adapter V2 A+B SoftVoxel-center T1",
+  "epoch": 3,
+  "validation_samples": 4219,
+  "metrics": {
+    "IoU": [
+      25.68,
+      23.88,
+      22.86,
+      21.78
+    ],
+    "mIoU": [
+      18.2,
+      15.39,
+      13.4,
+      11.87
+    ],
+    "classes": 17
+  },
+  "future_mean": {
+    "IoU": 22.84,
+    "mIoU": 13.553333333333333
+  },
+  "checkpoint": "work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-t1-from-center2/epoch_3.pth",
+  "checkpoint_sha256": "bad9713741aa31373102e9769513ee52832359388990bfb9b365e9e9da40057c",
+  "checkpoint_in_git": false,
+  "input_protocol": "Original legacy ego inputs and original fixed Memory cache; NOT causally repaired or certified",
+  "training_provenance": {
+    "experiment": "T1",
+    "source_checkpoint": "work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-from-ab1/epoch_2.pth",
+    "seed": 17,
+    "resume_optimizer": true,
+    "source_epoch": 2,
+    "max_epochs": 3,
+    "beta_by_horizon": {
+      "1s": 0.0,
+      "2s": 0.0,
+      "3s": 0.25
+    },
+    "git_head": "3c057d61ab2c7d8ea68ceb4ddd319d9bf7e1bf73",
+    "sha256": {
+      "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-t1.py": "a7522d0eeb6bc50a86b583776f5d232b2a7811e8b4c026e5dd4a4b81c845b2c5",
+      "work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-from-ab1/epoch_2.pth": "754aac556c1a1ed44fdb16a0e7f5412e9e425e8bc13874ceec53b263acda7942",
+      "mmdet3d/models/sparsedetectors/query_memory.py": "a075ff695e814367b76e541149bfc051332ef90ffdbdb3c821186a7a974428cc",
+      "mmdet3d/models/sparsedetectors/sparseworld_4d_traj.py": "fb2092e4da449d5813607f9c822b0850c4bf7c228c8afa0e77886ab9a8048f23",
+      "tools/run_train_future_memory_occ_t1.sh": "12437e0f99076b606ac0c5fb37cc9ef0adee33d9871b4cc80a42279a4cea4d1f"
+    }
+  },
+  "evaluation_provenance": {
+    "experiment": "t1",
+    "checkpoint": "work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-t1-from-center2/epoch_3.pth",
+    "seed": 0,
+    "mode": "native checkpoint; dump-only then offline evaluation",
+    "overrides": {
+      "samples_per_gpu": 1,
+      "workers_per_gpu": 2,
+      "query_chunk_size": 48
+    },
+    "sha256": {
+      "work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-t1-from-center2/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-t1.py": "df1a9d27f2f10befa276daff94893044b5e0e2db3123254a1d78caa6fc883fd8",
+      "work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-t1-from-center2/epoch_3.pth": "bad9713741aa31373102e9769513ee52832359388990bfb9b365e9e9da40057c",
+      "tools/test_temporal.py": "6b171e208b692e904afc641fb2b97b13c55d86b44d78ac2650083b74aed39001",
+      "tools/eval_dumped_temporal.py": "929c7b8975ddec0932e5b556f972578aa98dd6c550f928854b91ac36c064fcb1",
+      "mmdet3d/models/sparsedetectors/query_memory.py": "a075ff695e814367b76e541149bfc051332ef90ffdbdb3c821186a7a974428cc",
+      "mmdet3d/models/sparsedetectors/sparseworld_4d_traj.py": "fb2092e4da449d5813607f9c822b0850c4bf7c228c8afa0e77886ab9a8048f23",
+      "mmdet3d/models/sparsedetectors/opus_head.py": "0174277d1a092dc88a71233ecda196910d37a3c89d3305f460cb58b794652f3a"
+    }
+  }
+}

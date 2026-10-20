@@ -24,7 +24,7 @@ from mmdet3d.models.sparsedetectors.query_memory import (
     STACQueryMemory, QueryMemoryBank, decode_points_metric,
     logits_to_query_confidence, FutureMemoryAdapter, FutureMemoryAdapterV2,
     decode_semantic_occupancy_logits, apply_metric_position_residual,
-    future_memory_v2_point_losses
+    future_memory_v2_point_losses, validate_occupancy_class_balance_beta
 )
 from mmdet3d.models.heads import DownScaleModule3DCustom
 from mmdet3d.core.bbox import Box3DMode, Coord3DMode, LiDARInstance3DBoxes
@@ -465,10 +465,17 @@ class SparseWorld4DTraj(OPUS):
                         'positive_radius',
                         'occupancy_positive_weight',
                         'occupancy_negative_weight',
+                        'occupancy_positive_class_balance_beta',
+                        'occupancy_class_balance_diagnostics',
                         'threshold_positive_weight',
                         'threshold_negative_weight',
                         'soft_voxel_center_offset',
                         'soft_voxel_renormalize_valid_corners') if key in adapter_cfg}
+                if 'occupancy_positive_class_balance_beta' in adapter_cfg:
+                    self.future_memory_v2_loss_cfg[
+                        'occupancy_positive_class_balance_beta'
+                    ] = validate_occupancy_class_balance_beta(adapter_cfg[
+                        'occupancy_positive_class_balance_beta'])
                 adapter_cfg.setdefault('embed_dims', query_embed_dims)
                 adapter_cfg.setdefault('num_classes', 17)
                 adapter_cfg.setdefault('num_points', self.num_refines)
@@ -834,11 +841,17 @@ class SparseWorld4DTraj(OPUS):
 
     def _future_memory_v2_losses(
             self, semantic_logits, occupancy_logits, points, points_mask,
-            gt_voxel_semantics, baseline_semantic_logits=None):
+            gt_voxel_semantics, baseline_semantic_logits=None,
+            horizon_name=None):
         """Compute point occupancy/semantic and sparse voxel losses."""
         voxel_size = getattr(self.pts_bbox_head, 'voxel_size',
                              (0.4, 0.4, 0.4))
         loss_cfg = getattr(self, 'future_memory_v2_loss_cfg', {})
+        beta_by_horizon = loss_cfg.get('occupancy_positive_class_balance_beta', {})
+        if beta_by_horizon and horizon_name not in ('1s', '2s', '3s'):
+            raise ValueError('An explicit 1s/2s/3s horizon_name is required '
+                             'for occupancy class balancing')
+        class_balance_beta = float(beta_by_horizon.get(horizon_name, 0.0))
         configured_weights = getattr(self.pts_bbox_head, 'train_cfg', {}).get(
             'cls_weights', None)
         class_weights = (configured_weights if configured_weights is not None
@@ -869,7 +882,10 @@ class SparseWorld4DTraj(OPUS):
             soft_voxel_center_offset=float(loss_cfg.get(
                 'soft_voxel_center_offset', 0.0)),
             soft_voxel_renormalize_valid_corners=bool(loss_cfg.get(
-                'soft_voxel_renormalize_valid_corners', False)))
+                'soft_voxel_renormalize_valid_corners', False)),
+            occupancy_positive_class_balance_beta=class_balance_beta,
+            occupancy_class_balance_diagnostics=(class_balance_beta > 0. and
+                bool(loss_cfg.get('occupancy_class_balance_diagnostics', False))))
 
     def refine_points(self, points_proposal, points_delta):
         B, Q = points_delta.shape[:2]
@@ -2008,7 +2024,8 @@ class SparseWorld4DTraj(OPUS):
                         forecast_points_list[step_index],
                         forecast_points_mask_list[step_index],
                         voxel_semantics_temporal[step_index],
-                        outputs['baseline_forecast_semantics_list'][step_index])
+                        outputs['baseline_forecast_semantics_list'][step_index],
+                        horizon_name=horizon_name)
                     cfg = self.future_memory_v2_loss_cfg
                     losses[f'mem_{horizon_name}.loss_base_cls'] = raw['fu1.loss_cls'] * float(cfg.get('loss_base_cls_weight', 1.0))
                     losses[f'mem_{horizon_name}.loss_sem'] = v2['loss_sem'] * float(cfg.get('loss_sem_weight', 0.25))
@@ -2017,6 +2034,10 @@ class SparseWorld4DTraj(OPUS):
                     losses[f'mem_{horizon_name}.loss_threshold'] = v2['loss_threshold'] * float(cfg.get('loss_threshold_weight', 0.1))
                     losses[f'mem_{horizon_name}.loss_soft_voxel'] = v2['loss_soft_voxel'] * float(cfg.get('loss_soft_voxel_weight', 0.1))
                     losses[f'mem_{horizon_name}.loss_pts'] = raw['fu1.loss_pts'] * float(cfg.get('loss_pts_weight', 0.5))
+                    for name, value in v2.get('occupancy_diagnostics', {}).items():
+                        # Detached non-loss statistics; fixed keys on every
+                        # rank even if it has no positive/valid points.
+                        losses[f'mem_{horizon_name}.{name}'] = value
                     for name, value in outputs.get(
                             'memory_adapter_diagnostics', [{}] * num_fu_frames
                     )[step_index].get('task_gate_stats', {}).items():
