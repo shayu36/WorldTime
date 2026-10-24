@@ -88,7 +88,10 @@ class LoadQueryMemoryFromFiles(object):
                  min_reliability=0.0,
                  spatial_cell_size=4.0,
                  max_per_spatial_cell=16,
-                 max_per_class=64):
+                 max_per_class=64,
+                 require_causal_inputs=False,
+                 expected_ego_input_sha256=None,
+                 expected_source_checkpoint_sha256=None):
         self.cache_root = cache_root
         self.history_frames = int(history_frames)
         self.max_queries_per_frame = int(max_queries_per_frame)
@@ -104,6 +107,12 @@ class LoadQueryMemoryFromFiles(object):
         self.spatial_cell_size = float(spatial_cell_size)
         self.max_per_spatial_cell = int(max_per_spatial_cell)
         self.max_per_class = int(max_per_class)
+        self.require_causal_inputs = bool(require_causal_inputs)
+        self.expected_ego_input_sha256 = expected_ego_input_sha256
+        self.expected_source_checkpoint_sha256 = expected_source_checkpoint_sha256
+        if self.require_causal_inputs and (
+                not expected_ego_input_sha256 or not expected_source_checkpoint_sha256):
+            raise ValueError('Causal cache loading requires pinned ego and checkpoint SHA256')
 
     @property
     def num_slots(self):
@@ -138,7 +147,7 @@ class LoadQueryMemoryFromFiles(object):
         return hist.get('sample_idx', hist.get('sample_token', hist.get('token')))
 
     def _validate_cache(self, cache, path, hist=None, current_ts=None,
-                        current_frame=None):
+                        current_frame=None, current_available_us=None):
         required = [
             'schema_version', 'sample_idx', 'scene_id', 'frame_idx',
             'timestamp', 'ego2global', 'query_feat', 'query_points_metric',
@@ -147,6 +156,29 @@ class LoadQueryMemoryFromFiles(object):
         missing = [key for key in required if key not in cache]
         if missing:
             raise KeyError(f'{path} missing query memory keys: {missing}')
+        if self.require_causal_inputs:
+            provenance = cache.get('input_provenance', {})
+            import math
+            latest = provenance.get('max_input_timestamp_us', float('nan'))
+            source_time = int(round(float(cache['timestamp']) * 1e6))
+            available = provenance.get(
+                'source_observation_available_timestamp_us', float('nan'))
+            if (provenance.get('protocol') != 'past_pose_backward_unknown_command_v1'
+                    or provenance.get('ego_input_sha256') != self.expected_ego_input_sha256
+                    or provenance.get('source_checkpoint_sha256') != self.expected_source_checkpoint_sha256
+                    or not math.isfinite(latest) or not math.isfinite(available)
+                    or available < source_time or latest > available
+                    or provenance.get('sample_idx') != cache['sample_idx']
+                    or provenance.get('scene_id') != cache['scene_id']
+                    or provenance.get('source_timestamp_us') != source_time
+                    or not provenance.get('generator_sha256')):
+                raise ValueError(f'{path} missing/mismatched/noncausal input provenance; legacy cache forbidden')
+            if (hist is not None and
+                    available != hist.get('available_timestamp_us')):
+                raise ValueError(f'{path} source observation availability mismatch')
+            if (current_available_us is None or
+                    available >= current_available_us):
+                raise ValueError(f'{path} source observation is not earlier than current')
         if int(cache['schema_version']) not in (1, 2):
             raise ValueError(
                 f'{path} has unsupported schema_version '
@@ -344,6 +376,14 @@ class LoadQueryMemoryFromFiles(object):
         root = self.cache_root or results.get('query_memory_cache_root', None)
         histories = self._history_candidates(results)
         current_ts = _timestamp(results)
+        current_available_us = None
+        if self.require_causal_inputs:
+            image_times = results.get('img_timestamp')
+            if image_times is None or len(image_times) == 0:
+                raise ValueError('Causal cache needs actual current image timestamps')
+            current_available_us = max(
+                [int(round(current_ts * 1e6))] +
+                [int(round(float(t) * 1e6)) for t in image_times])
         loaded = []
         if root is None:
             if self.strict and histories:
@@ -362,7 +402,8 @@ class LoadQueryMemoryFromFiles(object):
                 cache = torch.load(path, map_location='cpu')
                 self._validate_cache(
                     cache, path, hist=hist, current_ts=current_ts,
-                    current_frame=_frame_idx(results))
+                    current_frame=_frame_idx(results),
+                    current_available_us=current_available_us)
                 loaded.append((hist, path, cache))
 
         first_cache = next((cache for _, _, cache in loaded if cache is not None), None)

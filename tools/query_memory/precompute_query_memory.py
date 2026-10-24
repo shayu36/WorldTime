@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 import argparse
+import hashlib
+import json
 from pathlib import Path
 
 import torch
@@ -45,6 +47,8 @@ def parse_args():
     parser.add_argument('--skip-existing', action='store_true',
                         help='skip samples whose cache file already exists '
                              '(resume)')
+    parser.add_argument('--indices-json',
+                        help='Optional JSON list of PUBLIC dataset indices; bounded causal audit only')
     return parser.parse_args()
 
 
@@ -171,6 +175,33 @@ def build_cache_record(model, outs, img_meta, args):
         num_classes=int(query_logits.shape[-1]),
         source_config=str(args.config),
         source_checkpoint=str(args.checkpoint))
+    if getattr(args, 'causal_dataset', None) is not None:
+        dataset = args.causal_dataset
+        record = dataset.ad_info[sample_idx]
+        from mmdet3d.datasets.causal_ego import validate_record, observation_available_timestamp_us
+        raw_index = args.causal_raw_indices[sample_idx]
+        info = dataset.data_infos[raw_index]
+        validate_record(record, info)
+        # The packet becomes available after its last camera exposure. The
+        # source LiDAR timestamp is only the frame identifier; cameras can be
+        # a fraction of a millisecond later without using a future frame.
+        source_us = record['timestamp_us']
+        image_us = [int(round(float(t) * 1e6)) for t in img_meta['img_timestamp']]
+        available_us = observation_available_timestamp_us(
+            info, dataset.get_adj_info(info, raw_index))
+        latest = max([record['provenance']['max_input_timestamp_us']] + image_us)
+        if latest > available_us:
+            raise ValueError('Causal cache input exceeds observation availability')
+        cache['input_provenance'] = dict(
+            protocol=record['provenance']['protocol'],
+            sample_idx=sample_idx, scene_id=scene_id,
+            source_timestamp_us=source_us,
+            source_observation_available_timestamp_us=available_us,
+            max_input_timestamp_us=latest,
+            ego_input_sha256=dataset.causal_ego_sha256,
+            source_checkpoint_sha256=args.source_checkpoint_sha256,
+            generator_sha256=args.generator_sha256,
+            ego_implementation_sha256=args.ego_implementation_sha256)
     validate_cache_record(cache)
     return cache
 
@@ -249,8 +280,72 @@ def run_sparseworld_rap_prefix(model, img, img_metas, data):
     return model.pts_bbox_head(img_feats, img_metas)
 
 
+def setup_causal_generation(args, cfg, dataset, indices):
+    """Pin one source protocol and permit resume only within that same run."""
+    from mmdet3d.datasets.causal_ego import file_sha256, PROTOCOL
+    if args.overwrite:
+        raise ValueError('Causal cache forbids overwrite; use a new versioned directory')
+    args.causal_dataset = dataset
+    args.causal_raw_indices = {r['token']: i for i, r in enumerate(dataset.data_infos)}
+    args.source_checkpoint_sha256 = file_sha256(args.checkpoint)
+    args.generator_sha256 = file_sha256(__file__)
+    repo = Path(__file__).resolve().parents[2]
+    args.ego_implementation_sha256 = file_sha256(repo / 'mmdet3d/datasets/causal_ego.py')
+    source_paths = ['mmdet3d/datasets/causal_ego.py',
+                    'mmdet3d/datasets/nuscenes_dataset_occ_trajectory.py',
+                    'mmdet3d/models/sparsedetectors/opus_head.py',
+                    'mmdet3d/models/sparsedetectors/query_memory.py',
+                    'mmdet3d/models/sparsedetectors/sparseworld_4d_traj.py']
+    manifest = dict(protocol=PROTOCOL, split=args.split,
+        ego_input_sha256=dataset.causal_ego_sha256,
+        source_checkpoint_sha256=args.source_checkpoint_sha256,
+        generator_sha256=args.generator_sha256,
+        source_sha256={p: file_sha256(repo / p) for p in source_paths},
+        config_sha256=hashlib.sha256(cfg.pretty_text.encode()).hexdigest(),
+        annotation_sha256=file_sha256(cfg.data[args.split].ann_file),
+        dataset_count=len(dataset), selected_indices=indices,
+        selection={k: getattr(args, k) for k in (
+            'max_queries_per_frame', 'write_threshold', 'min_reliability',
+            'spatial_cell_size', 'max_per_spatial_cell', 'max_per_class')})
+    target = Path(args.output_dir)
+    manifest_path = target / 'generation.json'
+    if target.exists():
+        if not args.skip_existing or not manifest_path.is_file():
+            raise FileExistsError('Existing causal cache needs --skip-existing and a matching generation manifest')
+        if json.loads(manifest_path.read_text()) != manifest:
+            raise ValueError('Causal cache generation/source/config changed; use a new output directory')
+    else:
+        target.mkdir(parents=True, exist_ok=False)
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+    return manifest
+
+
+def validate_resumed_causal_record(cache, path, meta, args):
+    """Never silently skip old, future-dependent, wrong-source or damaged cache."""
+    from mmdet3d.datasets.causal_ego import observation_available_timestamp_us
+    from mmdet3d.datasets.pipelines.loading_query_memory import LoadQueryMemoryFromFiles
+    info = args.causal_dataset.data_infos[args.causal_raw_indices[str(meta_value(meta, 'sample_idx'))]]
+    raw = args.causal_raw_indices[info['token']]
+    available = observation_available_timestamp_us(info, args.causal_dataset.get_adj_info(info, raw))
+    validator = LoadQueryMemoryFromFiles(require_causal_inputs=True,
+        expected_ego_input_sha256=args.causal_dataset.causal_ego_sha256,
+        expected_source_checkpoint_sha256=args.source_checkpoint_sha256)
+    # No target frame exists during generation: +1 is only this internal
+    # validator's strict-earlier sentinel, not a change to any stored time.
+    validator._validate_cache(cache, path, hist=dict(sample_idx=info['token'],
+        scene_id=str(info['scene_token']), timestamp=int(info['timestamp'])/1e6,
+        available_timestamp_us=available), current_available_us=available+1)
+    prov = cache['input_provenance']
+    if (prov['generator_sha256'] != args.generator_sha256 or
+            prov['ego_implementation_sha256'] != args.ego_implementation_sha256):
+        raise ValueError('Resumed cache producer implementation mismatch')
+    validate_cache_record(cache)
+
+
 def main():
     args = parse_args()
+    from mmdet.apis import set_random_seed
+    set_random_seed(0, deterministic=True)
     cfg = Config.fromfile(args.config)
     if 'query_memory_cfg' in cfg.model:
         cfg.model.query_memory_cfg = dict(enabled=False)
@@ -260,7 +355,7 @@ def main():
     MEMORY_KEYS = {
         'memory_query_feat', 'memory_points_metric', 'memory_conf',
         'memory_reliability', 'memory_label', 'memory_valid',
-        'memory_source_ego2global', 'memory_age'
+        'memory_source_ego2global', 'memory_age', 'memory_semantic_distribution'
     }
 
     def _sanitize_transform(p):
@@ -292,8 +387,20 @@ def main():
             new_pipe.append(_sanitize_transform(p))
         cfg.data[args.split][pipe_key] = new_pipe
     dataset = build_dataset(cfg.data[args.split])
+    selected_dataset = dataset
+    indices = list(range(len(dataset)))
+    if args.indices_json:
+        indices = json.loads(Path(args.indices_json).read_text())
+        if (not isinstance(indices, list) or not indices
+                or any(type(i) is not int or not 0 <= i < len(dataset) for i in indices)
+                or len(set(indices)) != len(indices)):
+            raise ValueError('indices-json must contain unique valid integer dataset indices')
+        selected_dataset = torch.utils.data.Subset(dataset, indices)
+    causal_manifest = None
+    if getattr(dataset, 'ego_input_mode', 'legacy') == 'causal_v1':
+        causal_manifest = setup_causal_generation(args, cfg, dataset, indices)
     data_loader = build_dataloader(
-        dataset,
+        selected_dataset,
         samples_per_gpu=1,
         workers_per_gpu=args.workers_per_gpu,
         dist=False,
@@ -301,9 +408,11 @@ def main():
     model = build_model(cfg.model, test_cfg=cfg.get('test_cfg'))
     load_checkpoint(model, args.checkpoint, map_location='cpu')
     model.eval().cuda()
+    model.requires_grad_(False)
 
     output_dir = Path(args.output_dir)
     skipped = 0
+    completed = []
     with torch.no_grad():
         for data in data_loader:
             img_metas = unwrap_img_metas(data)
@@ -316,6 +425,10 @@ def main():
                     scene_id_from_meta(meta),
                     str(meta_value(meta, 'sample_idx')))
                 if pre_path.exists():
+                    if causal_manifest is not None:
+                        cache = torch.load(pre_path, map_location='cpu')
+                        validate_resumed_causal_record(cache, pre_path, meta, args)
+                        completed.append(str(pre_path.relative_to(output_dir)))
                     skipped += 1
                     if skipped % 1000 == 0:
                         print(f'[skip-existing] skipped {skipped} so far', flush=True)
@@ -331,9 +444,28 @@ def main():
                 raise FileExistsError(
                     f'{path} already exists; pass --overwrite to replace it')
             path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(cache, path)
+            if causal_manifest is not None:
+                # A killed write must not leave a .pt file accepted on resume.
+                temporary = path.with_suffix('.pt.partial')
+                torch.save(cache, temporary)
+                temporary.replace(path)
+                completed.append(str(path.relative_to(output_dir)))
+                if len(completed) % 100 == 0:
+                    print(f'[causal-cache] {len(completed)}/{len(indices)}', flush=True)
+            else:
+                torch.save(cache, path)
     if skipped:
         print(f'[skip-existing] total skipped: {skipped}', flush=True)
+    if causal_manifest is not None:
+        from mmdet3d.datasets.causal_ego import file_sha256
+        assert len(completed) == len(set(completed)) == len(indices)
+        completion = dict(generation_sha256=file_sha256(output_dir / 'generation.json'),
+                          dataset_count=len(dataset), count=len(completed),
+                          full_dataset=indices == list(range(len(dataset))), files=completed)
+        temporary = output_dir / 'complete.json.partial'
+        temporary.write_text(json.dumps(completion, indent=2))
+        temporary.replace(output_dir / 'complete.json')
+        print('[causal-cache] COMPLETE', len(completed), flush=True)
 
 
 if __name__ == '__main__':

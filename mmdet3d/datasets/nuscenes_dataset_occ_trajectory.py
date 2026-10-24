@@ -138,6 +138,8 @@ class NuScenesDatasetOccpancy4DTraj(NuScenesDataset):
                 semantic_gt_path=None,
                 depth_gt_path=None,
                 ego_gt_path=None,
+                ego_input_mode='legacy',
+                ego_input_sha256=None,
                 is_train=True,
                 aux_frames=[-1,1],
                 max_ray_nums=0,
@@ -145,6 +147,7 @@ class NuScenesDatasetOccpancy4DTraj(NuScenesDataset):
                 query_memory_history_frames=3,
                 query_memory_max_queries_per_frame=256,
                 query_memory_strict=False,
+                query_memory_require_causal_inputs=False,
                 query_memory_history_selection_mode='recent',
                 query_memory_history_target_ages=(2.5, 3.5, 4.5),
                 query_memory_history_age_tolerance=0.35,
@@ -157,6 +160,8 @@ class NuScenesDatasetOccpancy4DTraj(NuScenesDataset):
         self.query_memory_max_queries_per_frame = int(
             query_memory_max_queries_per_frame)
         self.query_memory_strict = bool(query_memory_strict)
+        # Memory provenance is independent of the CURRENT Baseline ego input.
+        self.query_memory_require_causal_inputs = bool(query_memory_require_causal_inputs)
         # Problem 6: target-age history slot selection.
         self.query_memory_history_selection_mode = str(
             query_memory_history_selection_mode)
@@ -174,7 +179,20 @@ class NuScenesDatasetOccpancy4DTraj(NuScenesDataset):
         self.max_ray_nums = max_ray_nums
 
         self.tokens = train_token() if not self.test_mode else test_token()
-        if ego_gt_path is not None:
+        self.ego_input_mode = ego_input_mode
+        self.causal_ego_sha256 = None
+        if ego_input_mode == 'causal_v1':
+            from .causal_ego import load_artifact
+            if ego_gt_path is None or not ego_input_sha256:
+                raise ValueError('causal_v1 requires an explicit ego_gt_path and ego_input_sha256')
+            artifact, digest = load_artifact(ego_gt_path)
+            if digest != ego_input_sha256:
+                raise ValueError('Causal ego artifact SHA256 mismatch')
+            self.ad_info = artifact['records']
+            self.causal_ego_sha256 = digest
+        elif ego_input_mode != 'legacy':
+            raise ValueError('Unknown ego_input_mode: ' + str(ego_input_mode))
+        elif ego_gt_path is not None:
             self.ad_info = pickle.load(open(ego_gt_path, 'rb'))
         else:
             self.ad_info = pickle.load(open('admlp/stp3_val/data_nuscene.pkl', 'rb'))
@@ -204,6 +222,25 @@ class NuScenesDatasetOccpancy4DTraj(NuScenesDataset):
         self.with_velocity = True
         self.with_attr = True
         self.box_mode_3d = Box3DMode.LIDAR
+
+    def _ego_network_input(self, info):
+        """Explicit causal schema; leave legacy serialization order untouched."""
+        token = info['token']
+        if self.ego_input_mode == 'causal_v1':
+            from .causal_ego import feature_vector
+            return torch.from_numpy(feature_vector(self.ad_info[token], info)).unsqueeze(0)
+        cur_info = []
+        key = list(self.ad_info[token])
+        key.sort()
+        for k in key:
+            if k == 'gt':
+                continue
+            ele = self.ad_info[token][k]
+            if count_layers(ele) == 2:
+                cur_info += ele
+            else:
+                cur_info.append(ele)
+        return torch.tensor(cur_info).to(torch.float32).flatten().unsqueeze(-1).permute(1, 0)
     
     def __getitem__(self, idx):
         """Get item from infos according to the given index.
@@ -241,13 +278,19 @@ class NuScenesDatasetOccpancy4DTraj(NuScenesDataset):
         return int(info.get('frame_idx', fallback_index))
 
     def _hist_info_dict(self, hist, hist_index):
-        return dict(
+        result = dict(
             sample_idx=str(hist['token']),
             scene_id=str(self._query_memory_scene_id(hist)),
             scene_token=hist.get('scene_token', None),
             scene_name=hist.get('scene_name', None),
             frame_idx=self._query_memory_frame_idx(hist, hist_index),
             timestamp=self._query_memory_timestamp(hist))
+        if (getattr(self, 'ego_input_mode', 'legacy') == 'causal_v1' or
+                getattr(self, 'query_memory_require_causal_inputs', False)):
+            from .causal_ego import observation_available_timestamp_us
+            result['available_timestamp_us'] = observation_available_timestamp_us(
+                hist, self.get_adj_info(hist, hist_index))
+        return result
 
     def _collect_causal_history(self, index):
         """All strictly-past same-scene frames, oldest first, with base age."""
@@ -589,23 +632,14 @@ class NuScenesDatasetOccpancy4DTraj(NuScenesDataset):
             info = self.data_infos[index + ego_interval]
             # info = self.data_infos[index]
             token = info['token']
-            assert token in self.ad_info.keys()
             # assert token in self.tokens
             assert info['scene_name'] == curr_scene
             assert info['frame_idx'] >= 4
 
-            cur_info = []
-            key = list(self.ad_info[token])
-            key.sort()
-            for k in key:
-                if k=='gt':continue
-                ele = self.ad_info[token][k]
-                if count_layers(ele) == 2:
-                    cur_info += ele
-                else:
-                    cur_info.append(ele)
-            cur_info = torch.tensor(cur_info).to(torch.float32).flatten().unsqueeze(-1).permute(1, 0)
-            input_dict['temporal_ego_states'][ego_interval] = cur_info
+            # Future pose/trajectory dictionaries below remain GT supervision.
+            # The causal prediction input contains ONLY current ego state.
+            if self.ego_input_mode == 'legacy' or ego_interval == 0:
+                input_dict['temporal_ego_states'][ego_interval] = self._ego_network_input(info)
             # viewpad = np.eye(4)
             # viewpad[:3,:3] = Quaternion(input_dict['temporal_ann_infos'][ego_interval+1]['ego2global_rotation']).rotation_matrix
             # viewpad[:3,3] = np.array(input_dict['temporal_ann_infos'][ego_interval+1]['ego2global_translation'])

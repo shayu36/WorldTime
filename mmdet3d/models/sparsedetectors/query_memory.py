@@ -1692,6 +1692,94 @@ def decode_semantic_occupancy_logits(base_logits, delta_s, delta_o, gate,
     return s_sem, occupancy, s_decode
 
 
+class AdapterTemporalRead(nn.Module):
+    """Query-identity read of detached Adapter state, never Baseline state.
+
+    State is [B,Q,C], pooled over supported points (not persistent point IDs).
+    The zero-initialized output projection preserves a trained T1 model at
+    migration. A bounded feature update avoids accumulating logits/positions.
+    """
+
+    def __init__(self, embed_dims, gate_bias=-2.0, max_delta=1.0):
+        super().__init__()
+        if not math.isfinite(max_delta) or max_delta <= 0:
+            raise ValueError('temporal_max_delta must be finite and positive')
+        if not math.isfinite(gate_bias):
+            raise ValueError('temporal_gate_bias must be finite')
+        self.max_delta = float(max_delta)
+        self.norm = nn.LayerNorm(embed_dims)
+        self.value = nn.Linear(embed_dims, embed_dims)
+        self.output = nn.Linear(embed_dims, embed_dims, bias=False)
+        self.gate = nn.Linear(2 * embed_dims, 1)
+        nn.init.xavier_uniform_(self.value.weight)
+        nn.init.zeros_(self.value.bias)
+        nn.init.zeros_(self.output.weight)
+        nn.init.xavier_uniform_(self.gate.weight)
+        nn.init.constant_(self.gate.bias, gate_bias)
+
+    @staticmethod
+    def align(state, query_ids, query_feat, horizon_id):
+        """Match explicit original Query IDs; unseen IDs have no history.
+
+        IDs are [Q], shared by batch elements because OPUS schedules the same
+        Query slots for every element. Features/validity remain batch-local.
+        No [all current points, all historical points] matrix is constructed.
+        """
+        B, Q, C = query_feat.shape
+        if (query_ids is None or query_ids.shape != (Q,) or
+                query_ids.dtype != torch.long or
+                query_ids.device != query_feat.device or
+                query_ids.unique().numel() != Q):
+            raise ValueError('temporal query_ids must be unique int64 [Q] on the query device')
+        aligned = query_feat.new_zeros(B, Q, C)
+        valid = torch.zeros(B, Q, dtype=torch.bool, device=query_feat.device)
+        if state is None:
+            return aligned, valid
+        if horizon_id == 0 or state['horizon_id'] != horizon_id - 1:
+            raise ValueError('temporal state must come from the immediately preceding horizon; reset at 1s')
+        features, previous_valid, ids = (
+            state['features'], state['valid'], state['query_ids'])
+        if (features.ndim != 3 or features.shape[0] != B or features.shape[-1] != C or
+                previous_valid.shape != features.shape[:2] or
+                previous_valid.dtype != torch.bool or ids.shape != (features.shape[1],) or
+                ids.dtype != torch.long or ids.unique().numel() != ids.numel() or
+                any(x.device != query_feat.device for x in (features, previous_valid, ids))):
+            raise ValueError('invalid temporal state: expected features [B,Qprev,C], valid [B,Qprev], unique IDs [Qprev]')
+        if ids.numel() == 0:
+            return aligned, valid
+        sorted_ids, order = ids.sort()
+        index = torch.searchsorted(sorted_ids, query_ids).clamp_max(ids.numel() - 1)
+        matched = sorted_ids[index] == query_ids
+        index = order[index]
+        # First round uses truncated temporal gradients, even for externally
+        # supplied states. This bounds graph lifetime to one horizon.
+        gathered = features.detach()[:, index].to(query_feat)
+        valid = (previous_valid[:, index] & matched.unsqueeze(0) &
+                 torch.isfinite(gathered).all(-1))
+        return torch.where(valid[..., None], gathered, aligned), valid
+
+    def forward(self, adapted, previous, previous_valid, point_valid):
+        # adapted [B,Qchunk,R,C], previous [B,Qchunk,C]. This is an
+        # Adapter feature update, NOT a historical Point Memory Context.
+        previous = self.norm(previous.to(self.norm.weight.dtype)).to(adapted.dtype)
+        value = self.max_delta * torch.tanh(self.output(
+            F.gelu(self.value(previous.to(self.value.weight.dtype)))))
+        previous_points = previous.unsqueeze(2).expand_as(adapted)
+        gate = torch.sigmoid(self.gate(torch.cat(
+            [adapted, previous_points], -1).to(self.gate.weight.dtype)))
+        valid = point_valid & previous_valid.unsqueeze(-1)
+        gate = torch.where(valid[..., None], gate, torch.zeros_like(gate))
+        update = gate.to(adapted.dtype) * value.to(adapted.dtype).unsqueeze(2)
+        return adapted + update, gate, update
+
+    @staticmethod
+    def pool(adapted, point_valid):
+        """Permutation-invariant FP32 mean over supported points of one Query."""
+        masked = torch.where(point_valid[..., None], adapted.float(),
+                             torch.zeros_like(adapted, dtype=torch.float32))
+        return (masked.sum(2) / point_valid.sum(2).clamp_min(1)[..., None]).to(adapted.dtype)
+
+
 class FutureMemoryAdapterV2(nn.Module):
     """Two-stage geometry/semantic Query-to-Point future memory adapter.
 
@@ -1712,7 +1800,8 @@ class FutureMemoryAdapterV2(nn.Module):
                  point_geometry_head_fraction=0.5,
                  gate_bias=-1.0, dropout=0.0, pc_range=None,
                  voxel_size=(0.4, 0.4, 0.4), gate_mode='shared',
-                 horizon_gate_bias=False, **kwargs):
+                 horizon_gate_bias=False, temporal_adapter_enabled=False,
+                 temporal_gate_bias=-2.0, temporal_max_delta=1.0, **kwargs):
         super().__init__()
         del kwargs
         if int(embed_dims) % int(num_heads) != 0:
@@ -1814,6 +1903,16 @@ class FutureMemoryAdapterV2(nn.Module):
             # [horizon, task], task order = semantic, occupancy, position.
             self.task_horizon_bias = nn.Parameter(
                 torch.zeros(len(self.HORIZON_SECONDS), 3))
+        # Opt-in only: old V2/T1 configs retain all parameter keys, RNG order
+        # and numerical paths. All new parameters stay in the V2 whitelist.
+        self.temporal_adapter_enabled = bool(temporal_adapter_enabled)
+        if self.temporal_adapter_enabled:
+            # CPU module construction must not shift the matched control's
+            # subsequent initialization / Semantic Dropout RNG stream.
+            with torch.random.fork_rng(devices=[]):
+                self.temporal_read = AdapterTemporalRead(
+                    self.embed_dims, temporal_gate_bias, temporal_max_delta)
+
     def task_gates(self, adapted, horizon_id):
         """Return independent semantic, occupancy and position point gates."""
         if self.gate_mode == 'shared':
@@ -1842,7 +1941,7 @@ class FutureMemoryAdapterV2(nn.Module):
         nn.init.xavier_uniform_(self.gate_head.weight)
         nn.init.constant_(self.gate_head.bias, float(gate_bias))
 
-    def _empty(self, query_feat, horizon_id):
+    def _empty(self, query_feat, horizon_id, query_ids=None):
         B, Q, _ = query_feat.shape
         z = query_feat.new_zeros
         empty_gate = z(B, Q, self.num_points, 1)
@@ -1850,7 +1949,7 @@ class FutureMemoryAdapterV2(nn.Module):
             # A completely empty Memory rank must still join DDP reductions.
             anchor = sum(p.reshape(-1)[0] * 0. for p in self.parameters())
             empty_gate = empty_gate + anchor
-        return dict(
+        result = dict(
             delta_s=z(B, Q, self.num_points, self.num_classes),
             delta_o=z(B, Q, self.num_points, 1),
             delta_p=z(B, Q, self.num_points, 3),
@@ -1893,6 +1992,15 @@ class FutureMemoryAdapterV2(nn.Module):
                 base_age=z(B, 0), effective_age=z(B, 0),
                 horizon_seconds=float(self.HORIZON_SECONDS[horizon_id]),
                 point_attention_shape=(B, 0, self.num_points, self.num_heads, 0)))
+        if self.temporal_adapter_enabled:
+            result['temporal_state'] = dict(
+                features=z(B, Q, self.embed_dims),
+                valid=torch.zeros(B, Q, dtype=torch.bool, device=query_feat.device),
+                query_ids=query_ids.detach().clone(), horizon_id=horizon_id)
+            result['diagnostics']['temporal_gate'] = empty_gate.detach()
+            result['diagnostics']['temporal_update_abs'] = z(())
+            result['temporal_stats'] = z(3, dtype=torch.float32)
+        return result
 
     def _semantics(self, memory, B, N, device, dtype):
         sem = memory.get('memory_semantic_distribution')
@@ -1938,7 +2046,10 @@ class FutureMemoryAdapterV2(nn.Module):
         finite_points = torch.isfinite(points).all(-1).all(-1)
         finite_rel = torch.isfinite(rel)
         finite_age = torch.isfinite(age)
-        valid = valid & finite_query & finite_points & finite_rel & finite_age
+        # V2 defence in depth: a future/equal-time record must not become
+        # eligible merely because adding the prediction horizon makes its
+        # effective age positive. Check the original age before sanitizing it.
+        valid = valid & finite_query & finite_points & finite_rel & finite_age & (age > 0)
         feat = torch.nan_to_num(feat, nan=0., posinf=0., neginf=0.)
         points = torch.nan_to_num(points, nan=0., posinf=0., neginf=0.)
         rel = torch.nan_to_num(rel, nan=0., posinf=0., neginf=0.)
@@ -2098,7 +2209,7 @@ class FutureMemoryAdapterV2(nn.Module):
 
     def forward(self, query_feat, query_points_metric, baseline_logits, memory,
                 horizon_id, target_ego2global=None, return_diagnostics=True,
-                **kwargs):
+                temporal_state=None, query_ids=None, **kwargs):
         del kwargs
         if query_feat.dim() != 3 or query_points_metric.dim() != 4 or baseline_logits.dim() != 4:
             raise ValueError('V2 expects [B,Q,C], [B,Q,R,3], [B,Q,R,C]')
@@ -2108,8 +2219,11 @@ class FutureMemoryAdapterV2(nn.Module):
         horizon_id = int(horizon_id)
         if horizon_id not in (0, 1, 2):
             raise ValueError('horizon_id must be 0, 1, or 2')
+        if self.temporal_adapter_enabled:
+            previous, previous_valid = self.temporal_read.align(
+                temporal_state, query_ids, query_feat, horizon_id)
         if memory is None or not memory:
-            return self._empty(query_feat, horizon_id)
+            return self._empty(query_feat, horizon_id, query_ids)
         memory_for_read = dict(memory)
         source_ego = memory_for_read.get('memory_source_ego2global')
         if source_ego is not None and target_ego2global is not None:
@@ -2129,7 +2243,7 @@ class FutureMemoryAdapterV2(nn.Module):
         flat = self._reshape_memory(memory_for_read, B, query_feat.device, query_feat.dtype)
         N = flat['feat'].shape[1]
         if N == 0:
-            return self._empty(query_feat, horizon_id)
+            return self._empty(query_feat, horizon_id, query_ids)
         hs = float(self.HORIZON_SECONDS[horizon_id])
         h = self.horizon_embedding.weight[horizon_id].to(query_feat).view(1, 1, 1, C).expand(B, Q, self.num_points, C)
         (point_semantic, retrieval_semantic, semantic_entropy, uncertainty,
@@ -2376,6 +2490,10 @@ class FutureMemoryAdapterV2(nn.Module):
         gate = query_feat.new_zeros(B, Q, self.num_points, 1)
         gate_occ = query_feat.new_zeros(B, Q, self.num_points, 1)
         gate_pos = torch.zeros_like(gate_occ)
+        if self.temporal_adapter_enabled:
+            temporal_features = query_feat.new_zeros(B, Q, C)
+            temporal_gates = torch.zeros_like(gate)
+            temporal_update_abs = query_feat.new_zeros((), dtype=torch.float32)
         for start in range(0, Q, self.query_chunk_size):
             stop = min(Q, start + self.query_chunk_size)
             adapter_input = torch.cat([
@@ -2393,6 +2511,16 @@ class FutureMemoryAdapterV2(nn.Module):
                     f'{adapter_input.shape[-1]} features, expected '
                     f'{self.adapter_input_dims}')
             adapted = self.adapter(adapter_input)
+            if self.temporal_adapter_enabled:
+                if horizon_id > 0:
+                    adapted, temporal_gate, temporal_update = self.temporal_read(
+                        adapted, previous[:, start:stop],
+                        previous_valid[:, start:stop], has[:, start:stop])
+                    temporal_gates[:, start:stop] = temporal_gate.detach()
+                    temporal_update_abs = (temporal_update_abs +
+                                           temporal_update.detach().float().abs().sum())
+                temporal_features[:, start:stop] = self.temporal_read.pool(
+                    adapted.detach(), has[:, start:stop])
             delta_s[:, start:stop] = self.delta_s_head(adapted)
             delta_o[:, start:stop] = self.delta_o_head(adapted)
             delta_p[:, start:stop] = self.delta_p_head(adapted)
@@ -2407,10 +2535,24 @@ class FutureMemoryAdapterV2(nn.Module):
         gate = gate * point_mask
         gate_occ = gate_occ * point_mask
         gate_pos = gate_pos * point_mask
+        temporal_result = {}
+        if self.temporal_adapter_enabled:
+            # Local per-forward state, not a model attribute/cache. Empty
+            # current support invalidates the state instead of carrying stale
+            # information through an unsupported horizon.
+            temporal_result['temporal_state'] = dict(
+                features=temporal_features.detach(), valid=has.any(-1).detach(),
+                query_ids=query_ids.detach().clone(), horizon_id=horizon_id)
+            temporal_result['temporal_stats'] = torch.stack([
+                (previous_valid & has.any(-1)).float().sum() / max(B * Q, 1),
+                temporal_gates.float().sum() /
+                (has & previous_valid.unsqueeze(-1)).sum().clamp_min(1),
+                temporal_update_abs / max(B * Q * self.num_points * C, 1),
+            ]).detach()
         if not return_diagnostics:
             return dict(delta_s=delta_s, delta_o=delta_o, delta_p=delta_p,
                         gate=gate, point_gate=gate, gate_sem=gate,
-                        gate_occ=gate_occ, gate_pos=gate_pos)
+                        gate_occ=gate_occ, gate_pos=gate_pos, **temporal_result)
 
         diagnostics = dict(has_candidate=has,
                            eligible_point_count=eligible_counts.detach(),
@@ -2459,11 +2601,15 @@ class FutureMemoryAdapterV2(nn.Module):
         diagnostics['gate_sem'] = gate.detach()
         diagnostics['gate_occ'] = gate_occ.detach()
         diagnostics['gate_pos'] = gate_pos.detach()
+        if self.temporal_adapter_enabled:
+            diagnostics['temporal_previous_valid'] = previous_valid.detach()
+            diagnostics['temporal_gate'] = temporal_gates.detach()
+            diagnostics['temporal_update_abs'] = temporal_update_abs / max(B * Q * self.num_points * C, 1)
         return dict(delta_s=delta_s, delta_o=delta_o, delta_p=delta_p,
                     gate=gate, point_gate=gate, context=context,
                     gate_sem=gate, gate_occ=gate_occ, gate_pos=gate_pos,
                     point_context=context, attention_query=attention_query,
-                    diagnostics=diagnostics)
+                    diagnostics=diagnostics, **temporal_result)
 
 
 def sparse_soft_voxel_iou_loss(semantic_logits, occupancy_logits, points,

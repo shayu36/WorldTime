@@ -602,6 +602,14 @@ class SparseWorld4DTraj(OPUS):
         adapter_is_v2 = getattr(self, 'future_memory_adapter_version', 'v1') == 'v2'
         adapter_module = (self.future_memory_adapter_v2
                           if adapter_is_v2 else self.future_memory_adapter)
+        temporal_enabled = adapter_is_v2 and bool(getattr(
+            adapter_module, 'temporal_adapter_enabled', False))
+        # This state lives for ONE sample-forward only. It never replaces
+        # state_feat/state_pos and never enters the fixed Memory cache.
+        temporal_state = None
+        state_query_ids = (
+            torch.nonzero(current_mask, as_tuple=False).flatten().to(state_feat.device)
+            if temporal_enabled else None)
 
         # The frozen OPUS forward is already close to the 24 GB limit on a
         # 3090. V2 therefore recomputes its trainable branch during backward
@@ -624,6 +632,15 @@ class SparseWorld4DTraj(OPUS):
                 query_arg, points_arg, logits_arg, memory_arg, horizon_arg = \
                     adapter_args[:5]
                 target_pose = adapter_kwargs.get('target_ego2global')
+                # Bind the incoming state per call; never close over the loop's
+                # subsequently reassigned temporal_state. The incoming tensor
+                # state is detached by design (no cross-horizon BPTT).
+                incoming_temporal = adapter_kwargs.get('temporal_state')
+                incoming_ids = adapter_kwargs.get('query_ids')
+                temporal_args = {}
+                if temporal_enabled:
+                    temporal_args = dict(temporal_state=incoming_temporal,
+                                         query_ids=incoming_ids)
 
                 def _checkpointed_adapter(query_tensor, points_tensor,
                                            logits_tensor):
@@ -631,19 +648,31 @@ class SparseWorld4DTraj(OPUS):
                         query_tensor, points_tensor, logits_tensor,
                         memory_arg, horizon_arg,
                         target_ego2global=target_pose,
-                        return_diagnostics=False)
-                    return (output['delta_s'], output['delta_o'],
-                            output['delta_p'], output['gate'],
-                            output.get('gate_occ', output['gate']),
-                            output.get('gate_pos', output['gate']))
+                        return_diagnostics=False, **temporal_args)
+                    values = (output['delta_s'], output['delta_o'],
+                              output['delta_p'], output['gate'],
+                              output.get('gate_occ', output['gate']),
+                              output.get('gate_pos', output['gate']))
+                    if temporal_enabled:
+                        state = output['temporal_state']
+                        values += (state['features'], state['valid'],
+                                   output['temporal_stats'])
+                    return values
 
-                delta_s, delta_o, delta_p, gate, gate_occ, gate_pos = checkpoint(
+                values = checkpoint(
                     _checkpointed_adapter, query_arg, points_arg, logits_arg,
                     use_reentrant=False, preserve_rng_state=True)
-                return dict(delta_s=delta_s, delta_o=delta_o,
-                            delta_p=delta_p, gate=gate, point_gate=gate,
-                            gate_sem=gate, gate_occ=gate_occ, gate_pos=gate_pos,
-                            diagnostics={})
+                delta_s, delta_o, delta_p, gate, gate_occ, gate_pos = values[:6]
+                result = dict(delta_s=delta_s, delta_o=delta_o,
+                              delta_p=delta_p, gate=gate, point_gate=gate,
+                              gate_sem=gate, gate_occ=gate_occ, gate_pos=gate_pos,
+                              diagnostics={})
+                if temporal_enabled:
+                    result['temporal_state'] = dict(
+                        features=values[6].detach(), valid=values[7].detach(),
+                        query_ids=incoming_ids.detach().clone(), horizon_id=horizon_arg)
+                    result['temporal_stats'] = values[8].detach()
+                return result
             if not (adapter_is_v2 and self.training and v2_save_on_cpu):
                 return adapter_module(*adapter_args, **adapter_kwargs)
             save_on_cpu = getattr(torch.autograd.graph, 'save_on_cpu', None)
@@ -668,6 +697,10 @@ class SparseWorld4DTraj(OPUS):
             scheduled_feat = query_feat[:, scheduled_mask]
             scheduled_pos = query_pos[:, scheduled_mask]
             if scheduled_feat.shape[1] > 0:
+                if temporal_enabled:
+                    state_query_ids = torch.cat([
+                        state_query_ids,
+                        torch.nonzero(scheduled_mask, as_tuple=False).flatten().to(state_feat.device)])
                 state_feat = torch.cat([state_feat, scheduled_feat], dim=1)
                 state_pos = torch.cat([state_pos, scheduled_pos], dim=1)
                 state_timestamp = torch.cat([
@@ -699,15 +732,21 @@ class SparseWorld4DTraj(OPUS):
                         horizon_id=None, query_count=int(state_feat.shape[1]))
             if interval in target_horizons:
                 horizon_id, horizon_name = target_horizons[interval]
+                temporal_kwargs = {}
+                if temporal_enabled:
+                    temporal_kwargs = dict(temporal_state=temporal_state,
+                                           query_ids=state_query_ids)
                 if memory_context is None:
                     result = _run_adapter(
                         state_feat, decode_points_metric(state_pos, self.pc_range),
-                        base_cls_snapshot, None, horizon_id)
+                        base_cls_snapshot, None, horizon_id, **temporal_kwargs)
                 else:
                     result = _run_adapter(
                         state_feat, decode_points_metric(state_pos, self.pc_range),
                         base_cls_snapshot, memory_context, horizon_id,
-                        target_ego2global=target_ego2global)
+                        target_ego2global=target_ego2global, **temporal_kwargs)
+                if temporal_enabled:
+                    temporal_state = result['temporal_state']
                 if adapter_is_v2:
                     v2_graph_anchor = v2_graph_anchor + (
                         result['delta_s'].float().sum() + result['delta_o'].float().sum() +
@@ -756,6 +795,10 @@ class SparseWorld4DTraj(OPUS):
                     output_pos = self._refine_future_memory_points(
                         base_pos_snapshot, gated_delta.flatten(2, 3))
                 diag = dict(result.get('diagnostics', {}))
+                if temporal_enabled:
+                    diag['temporal_stats'] = dict(zip(
+                        ('temporal_previous_query_fraction', 'temporal_gate_mean',
+                         'temporal_update_abs'), result['temporal_stats'].detach()))
                 diag.update(enabled=True, internal_step=int(interval + 1),
                             horizon_id=int(horizon_id),
                             horizon_name=horizon_name,
@@ -2042,6 +2085,10 @@ class SparseWorld4DTraj(OPUS):
                             'memory_adapter_diagnostics', [{}] * num_fu_frames
                     )[step_index].get('task_gate_stats', {}).items():
                         # No 'loss' token: logging only, not an objective.
+                        losses[f'mem_{horizon_name}.{name}'] = value.detach()
+                    for name, value in outputs.get(
+                            'memory_adapter_diagnostics', [{}] * num_fu_frames
+                    )[step_index].get('temporal_stats', {}).items():
                         losses[f'mem_{horizon_name}.{name}'] = value.detach()
                 else:
                     losses[f'mem_{horizon_name}.loss_cls'] = raw['fu1.loss_cls']
