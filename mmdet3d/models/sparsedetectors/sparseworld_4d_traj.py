@@ -582,6 +582,9 @@ class SparseWorld4DTraj(OPUS):
         base_points_list = []
         forecast_semantic_logits_list = []
         forecast_occupancy_logits_list = []
+        # Only the dedicated planning subclass requests frozen evidence for
+        # its trainable fusion. Default V1/T1 paths and state dicts are unchanged.
+        planning_snapshots = [] if getattr(self, 'planning_fusion_only', False) else None
         # A rank can legitimately receive a sample with no valid point-level
         # Memory candidate. In that case the strict Baseline fallback bypasses
         # delta_p entirely, which makes DDP report delta_p_head as unused on
@@ -755,6 +758,11 @@ class SparseWorld4DTraj(OPUS):
                 else:
                     output_pos = self._refine_future_memory_points(
                         base_pos_snapshot, gated_delta.flatten(2, 3))
+                if planning_snapshots is not None:
+                    planning_snapshots.append(self._make_memory_planning_snapshot(
+                        interval, horizon_id, ego_feat, pred_traj, state_feat,
+                        base_pos_snapshot, output_pos, base_cls_snapshot,
+                        sem_logits, occ_logits, result))
                 diag = dict(result.get('diagnostics', {}))
                 diag.update(enabled=True, internal_step=int(interval + 1),
                             horizon_id=int(horizon_id),
@@ -805,7 +813,7 @@ class SparseWorld4DTraj(OPUS):
             base_cls_list.append(base_cls_snapshot)
             base_points_list.append(base_pos_snapshot)
 
-            if self.training:
+            if self.training and planning_snapshots is None:
                 if 'temporal_trajs' not in kwargs:
                     raise KeyError(
                         'temporal_trajs is required for future trajectory loss')
@@ -837,6 +845,8 @@ class SparseWorld4DTraj(OPUS):
             outputs['forecast_semantic_logits_list'] = forecast_semantic_logits_list
             outputs['forecast_occupancy_logits_list'] = forecast_occupancy_logits_list
             outputs['future_memory_v2_graph_anchor'] = v2_graph_anchor
+        if planning_snapshots is not None:
+            outputs['memory_planning_snapshots'] = planning_snapshots
         return outputs
 
     def _future_memory_v2_losses(

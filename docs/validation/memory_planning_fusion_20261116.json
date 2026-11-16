@@ -1,0 +1,428 @@
+{
+  "description": "Recorded local gradient acceptance, training completion and full planning evaluation; checkpoints and datasets excluded.",
+  "artifacts": {
+    "gradient_acceptance": {
+      "source_path": "/data/jxy/projects/work_dirs/memory-planning-gradient-20261116-kq117oik/acceptance/gradient_acceptance.json",
+      "record": {
+        "status": "PASS",
+        "config": "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-planning-fusion.py",
+        "source_checkpoint": "work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-t1-from-center2/epoch_3.pth",
+        "train_sample_index": 64,
+        "initial_baseline_identity": true,
+        "loss_names": [
+          "loss_traj_1s",
+          "loss_traj_2s",
+          "loss_traj_3s",
+          "loss_traj_4s",
+          "loss_traj_5s",
+          "loss_traj_6s"
+        ],
+        "first_loss": 0.11152084171772003,
+        "second_loss": 0.11112503707408905,
+        "first_backward": {
+          "parameter_gradient_norms": {
+            "memory_planning_fusion.token_encoder.0.weight": 0.0,
+            "memory_planning_fusion.token_encoder.0.bias": 0.0,
+            "memory_planning_fusion.token_encoder.1.weight": 0.0,
+            "memory_planning_fusion.token_encoder.1.bias": 0.0,
+            "memory_planning_fusion.token_encoder.3.weight": 0.0,
+            "memory_planning_fusion.token_encoder.3.bias": 0.0,
+            "memory_planning_fusion.ego_encoder.0.weight": 0.0,
+            "memory_planning_fusion.ego_encoder.0.bias": 0.0,
+            "memory_planning_fusion.ego_encoder.1.weight": 0.0,
+            "memory_planning_fusion.ego_encoder.1.bias": 0.0,
+            "memory_planning_fusion.horizon_embedding.weight": 0.0,
+            "memory_planning_fusion.attention.in_proj_weight": 0.0,
+            "memory_planning_fusion.attention.in_proj_bias": 0.0,
+            "memory_planning_fusion.attention.out_proj.weight": 0.0,
+            "memory_planning_fusion.attention.out_proj.bias": 0.0,
+            "memory_planning_fusion.residual_head.0.weight": 0.0,
+            "memory_planning_fusion.residual_head.0.bias": 0.0,
+            "memory_planning_fusion.residual_head.2.weight": 0.4219222962856293,
+            "memory_planning_fusion.residual_head.2.bias": 0.2361828088760376
+          },
+          "group_gradient_norms": {
+            "token_encoder": 0.0,
+            "ego_encoder": 0.0,
+            "horizon_embedding": 0.0,
+            "attention": 0.0,
+            "residual_head": 0.6581051051616669
+          },
+          "frozen_parameters_grad_none": true,
+          "frozen_children_eval": true
+        },
+        "second_backward": {
+          "parameter_gradient_norms": {
+            "memory_planning_fusion.token_encoder.0.weight": 0.00027529752696864307,
+            "memory_planning_fusion.token_encoder.0.bias": 1.340819289907813e-05,
+            "memory_planning_fusion.token_encoder.1.weight": 9.91794058791129e-06,
+            "memory_planning_fusion.token_encoder.1.bias": 9.91667911875993e-06,
+            "memory_planning_fusion.token_encoder.3.weight": 0.00014352209109347314,
+            "memory_planning_fusion.token_encoder.3.bias": 2.5996443582698703e-05,
+            "memory_planning_fusion.ego_encoder.0.weight": 0.0013290439965203404,
+            "memory_planning_fusion.ego_encoder.0.bias": 0.00017183535965159535,
+            "memory_planning_fusion.ego_encoder.1.weight": 8.064246503636241e-05,
+            "memory_planning_fusion.ego_encoder.1.bias": 5.894735659239814e-05,
+            "memory_planning_fusion.horizon_embedding.weight": 3.8085235587459465e-07,
+            "memory_planning_fusion.attention.in_proj_weight": 0.00010464209481142461,
+            "memory_planning_fusion.attention.in_proj_bias": 3.381745409569703e-05,
+            "memory_planning_fusion.attention.out_proj.weight": 0.00012817127571906894,
+            "memory_planning_fusion.attention.out_proj.bias": 6.0610094806179404e-05,
+            "memory_planning_fusion.residual_head.0.weight": 0.0011467383010312915,
+            "memory_planning_fusion.residual_head.0.bias": 0.00014628918142989278,
+            "memory_planning_fusion.residual_head.2.weight": 0.4032328128814697,
+            "memory_planning_fusion.residual_head.2.bias": 0.22584812343120575
+          },
+          "group_gradient_norms": {
+            "token_encoder": 0.00047805887425056426,
+            "ego_encoder": 0.0016404691778006963,
+            "horizon_embedding": 3.8085235587459465e-07,
+            "attention": 0.00032724091943237,
+            "residual_head": 0.6303739637951367
+          },
+          "frozen_parameters_grad_none": true,
+          "frozen_children_eval": true
+        },
+        "optimizer_steps": 1,
+        "backward_calls": 2,
+        "trainable_prefix": "memory_planning_fusion.",
+        "trainable_count": 224002,
+        "frozen_parameter_and_buffer_hashes_unchanged": true,
+        "point_query_counts": [
+          840,
+          960,
+          1040
+        ],
+        "valid_queries": [
+          754,
+          851,
+          898
+        ],
+        "peak_allocated_mib": 2013.85693359375,
+        "elapsed_seconds": 30.09935087710619,
+        "checkpoint_saved": false,
+        "formal_training_started": false
+      }
+    },
+    "training_launch": {
+      "source_path": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/launch_manifest.json",
+      "record": {
+        "started_utc": "2026-11-16T02:00:38.122928+00:00",
+        "source_checkpoint": "/data/jxy/projects/work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-t1-from-center2/epoch_3.pth",
+        "source_sha256": "bad9713741aa31373102e9769513ee52832359388990bfb9b365e9e9da40057c",
+        "head": "c562513beb0ba2f919c62d524f468d58ddb3bf85",
+        "argv": [
+          "/data/jxy/projects/env/bin/torchrun",
+          "--nproc_per_node=2",
+          "--master_port=29547",
+          "tools/train.py",
+          "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-planning-fusion.py",
+          "--work-dir",
+          "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3",
+          "--launcher",
+          "pytorch",
+          "--seed",
+          "17",
+          "--cfg-options",
+          "runner.max_epochs=1",
+          "data.samples_per_gpu=1",
+          "data.workers_per_gpu=1",
+          "log_config.interval=10"
+        ],
+        "runtime_env": {
+          "PYTHONPATH": "/data/jxy/projects",
+          "CUDA_VISIBLE_DEVICES": "0,1",
+          "NCCL_ASYNC_ERROR_HANDLING": "1",
+          "NCCL_P2P_DISABLE": "1",
+          "OMP_NUM_THREADS": "1",
+          "PYTORCH_CUDA_ALLOC_CONF": "backend:native"
+        },
+        "epochs": 1,
+        "trainable_prefix": "memory_planning_fusion.",
+        "tmux_session": "memory-planning-train",
+        "source_snapshot": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/source_snapshot"
+      }
+    },
+    "training_completion": {
+      "source_path": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/completion_check.json",
+      "record": {
+        "checkpoint": "work_dirs/memory-planning-fusion-from-t1-e3/epoch_1.pth",
+        "epoch": 1,
+        "iteration": 9865,
+        "frozen_source_keys": 766,
+        "frozen_source_keys_changed": [],
+        "fusion_parameters": 224002,
+        "fusion_all_finite": true,
+        "trained_residual_head_norms": {
+          "memory_planning_fusion.residual_head.2.weight": 0.01786753162741661,
+          "memory_planning_fusion.residual_head.2.bias": 0.000859269464854151
+        },
+        "logged_iterations": 986,
+        "all_logged_losses_finite": true,
+        "all_logged_grad_norms_finite": true,
+        "mean_logged_loss": 0.18600736308316457,
+        "last_100_log_windows_mean_loss": 0.18489689999999995,
+        "recent_seconds_per_iteration": 0.8766774000000003,
+        "evaluation_metrics_present": false
+      }
+    },
+    "evaluation_provenance": {
+      "source_path": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1/provenance.json",
+      "record": {
+        "checkpoint": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/epoch_1.pth",
+        "checkpoint_sha256": "e5626f31d566c3090a0b7ad381e558a9ddcadfb7a1ffcba02172a9f0e29d840e",
+        "checkpoint_epoch": 1,
+        "source_root": "/data/jxy/projects",
+        "source_commit": "c562513beb0ba2f919c62d524f468d58ddb3bf85",
+        "command": [
+          "tools/audit_planning_pair.py",
+          "predict",
+          "--source-root",
+          "/data/jxy/projects",
+          "--config",
+          "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-planning-fusion.py",
+          "--checkpoint",
+          "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/epoch_1.pth",
+          "--output",
+          "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1"
+        ],
+        "native_model_call": "MMDataParallel(return_loss=False,rescale=True)",
+        "baseline": false,
+        "samples": 4219,
+        "seed": 0,
+        "trajectory_format": "current-frame cumulative XY, np.cumsum(raw six increments)",
+        "checkpoint_missing_dormant_keys": [],
+        "source_sha256": {
+          "mmdet3d/models/sparsedetectors/sparseworld_4d_traj.py": "a5b51d4fc5aacb6e41a5f51fa33541b02cec70d7c8b945076e8e4a0271824887",
+          "mmdet3d/models/sparsedetectors/query_memory.py": "6083c16932bef4afeed93e310eeba28652357f8842ba2d946b25ba3666796907",
+          "mmdet3d/datasets/nuscenes_dataset_occ_trajectory.py": "1d3d0f3708f4cab0ddca5582fd7fe85ad1f71c0dfdeff1ffbd38f8590ab00bd0",
+          "mmdet3d/datasets/pipelines/loading_query_memory.py": "0eaa4ba6a0d5a4aed8fd9db549b2be01208e63d3985b8c0f27f52ac5b6475df9"
+        },
+        "exporter_sha256": "408c3b9e6fdf4ae0830c3ac5a99290ede6fa25650147733face36183e38b8374",
+        "manifest_sha256": "ac45c234949344f47e36282c3edc6839f1ab4a5524ea8ac958c0f94c10911cf2"
+      }
+    },
+    "evaluation_metrics": {
+      "source_path": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1/metrics.json",
+      "record": {
+        "samples": 4219,
+        "filter_total": 4819,
+        "prediction": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1/trajectories.pkl",
+        "prediction_sha256": "ac2c13f3a7f03559fc6147613eb3c1fc17c979a574bd65d54358d4ca73119bc9",
+        "metric_source_sha256": "c8ec9308b2883d8d689391d44db28f7ff747a5d133b1bf6f0d7415cf733d3563",
+        "metric_entry_sha256": "408c3b9e6fdf4ae0830c3ac5a99290ede6fa25650147733face36183e38b8374",
+        "gt_sha256": {
+          "stp3_traj_gt.pkl": "e97c44269025535f458fb1ddb2b53c375ae8e76f1169ec0df141a2a203c612ee",
+          "stp3_occupancy.pkl": "eacc3f314e7c5040c32092ffdd03043f95c3ce8dadff5ee16847f555865f45f8",
+          "filter_token.pkl": "05de82addec070dde998485ade21dc166ea4edc79f13dc737c476da6b11c6a66"
+        },
+        "per_step": {
+          "obj_col": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "obj_box_col": [
+            0.0009480919688940048,
+            0.0009480919688940048,
+            0.0007110689766705036,
+            0.0014221379533410072,
+            0.0014221379533410072,
+            0.001185114961117506
+          ],
+          "L2": [
+            0.1290697604417801,
+            0.19030307233333588,
+            0.20271112024784088,
+            0.2568493187427521,
+            0.30278822779655457,
+            0.35625478625297546
+          ]
+        },
+        "prefix": {
+          "1s": {
+            "obj_col": 0.0,
+            "obj_box_col": 0.0009480919688940048,
+            "L2": 0.15968641638755798,
+            "box_collision_percent": 0.09480919688940048
+          },
+          "2s": {
+            "obj_col": 0.0,
+            "obj_box_col": 0.0010073477169498801,
+            "L2": 0.19473332166671753,
+            "box_collision_percent": 0.10073477169498801
+          },
+          "3s": {
+            "obj_col": 0.0,
+            "obj_box_col": 0.0011061072582378983,
+            "L2": 0.23966270685195923,
+            "box_collision_percent": 0.11061072582378983
+          },
+          "mean_L2": 0.1980274816354116
+        },
+        "endpoint": {
+          "1s": {
+            "obj_col": 0.0,
+            "obj_box_col": 0.0009480919688940048,
+            "L2": 0.19030307233333588,
+            "box_collision_percent": 0.09480919688940048
+          },
+          "2s": {
+            "obj_col": 0.0,
+            "obj_box_col": 0.0014221379533410072,
+            "L2": 0.2568493187427521,
+            "box_collision_percent": 0.14221379533410072
+          },
+          "3s": {
+            "obj_col": 0.0,
+            "obj_box_col": 0.001185114961117506,
+            "L2": 0.35625478625297546,
+            "box_collision_percent": 0.1185114961117506
+          },
+          "mean_L2": 0.2678023924430211
+        }
+      }
+    },
+    "baseline_comparison": {
+      "source_path": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1/comparison.json",
+      "record": {
+        "checkpoint": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/epoch_1.pth",
+        "checkpoint_sha256": "e5626f31d566c3090a0b7ad381e558a9ddcadfb7a1ffcba02172a9f0e29d840e",
+        "samples": 4219,
+        "same_validation_manifest": true,
+        "same_image_ego_inputs": true,
+        "same_tass": true,
+        "same_metric_code_and_gt": true,
+        "changed_trajectories": 3470,
+        "max_abs_trajectory_difference": 0.028856992721557617,
+        "mean_abs_trajectory_difference": 0.0031981603242456913,
+        "prefix": {
+          "1s": {
+            "L2": {
+              "baseline": 0.15959593653678894,
+              "trained": 0.15968641638755798,
+              "delta": 9.047985076904297e-05
+            },
+            "box_collision_percent": {
+              "baseline": 0.09480919688940048,
+              "trained": 0.09480919688940048,
+              "delta": 0.0
+            },
+            "obj_collision_percent": {
+              "baseline": 0.0,
+              "trained": 0.0,
+              "delta": 0.0
+            }
+          },
+          "2s": {
+            "L2": {
+              "baseline": 0.19454672932624817,
+              "trained": 0.19473332166671753,
+              "delta": 0.00018659234046936035
+            },
+            "box_collision_percent": {
+              "baseline": 0.10073477169498801,
+              "trained": 0.10073477169498801,
+              "delta": 0.0
+            },
+            "obj_collision_percent": {
+              "baseline": 0.0,
+              "trained": 0.0,
+              "delta": 0.0
+            }
+          },
+          "3s": {
+            "L2": {
+              "baseline": 0.23934847116470337,
+              "trained": 0.23966270685195923,
+              "delta": 0.0003142356872558594
+            },
+            "box_collision_percent": {
+              "baseline": 0.11061072582378983,
+              "trained": 0.11061072582378983,
+              "delta": 0.0
+            },
+            "obj_collision_percent": {
+              "baseline": 0.0,
+              "trained": 0.0,
+              "delta": 0.0
+            }
+          },
+          "mean_L2": {
+            "baseline": 0.19783037900924683,
+            "trained": 0.1980274816354116,
+            "delta": 0.00019710262616476348
+          }
+        },
+        "endpoint": {
+          "1s": {
+            "L2": {
+              "baseline": 0.1901221126317978,
+              "trained": 0.19030307233333588,
+              "delta": 0.00018095970153808594
+            },
+            "box_collision_percent": {
+              "baseline": 0.09480919688940048,
+              "trained": 0.09480919688940048,
+              "delta": 0.0
+            },
+            "obj_collision_percent": {
+              "baseline": 0.0,
+              "trained": 0.0,
+              "delta": 0.0
+            }
+          },
+          "2s": {
+            "L2": {
+              "baseline": 0.25642356276512146,
+              "trained": 0.2568493187427521,
+              "delta": 0.00042575597763061523
+            },
+            "box_collision_percent": {
+              "baseline": 0.14221379533410072,
+              "trained": 0.14221379533410072,
+              "delta": 0.0
+            },
+            "obj_collision_percent": {
+              "baseline": 0.0,
+              "trained": 0.0,
+              "delta": 0.0
+            }
+          },
+          "3s": {
+            "L2": {
+              "baseline": 0.3555155098438263,
+              "trained": 0.35625478625297546,
+              "delta": 0.0007392764091491699
+            },
+            "box_collision_percent": {
+              "baseline": 0.1185114961117506,
+              "trained": 0.1185114961117506,
+              "delta": 0.0
+            },
+            "obj_collision_percent": {
+              "baseline": 0.0,
+              "trained": 0.0,
+              "delta": 0.0
+            }
+          },
+          "mean_L2": {
+            "baseline": 0.26735372841358185,
+            "trained": 0.2678023924430211,
+            "delta": 0.00044866402943927186
+          }
+        }
+      }
+    }
+  },
+  "publish_branch_forward_verification": {
+    "samples": 4,
+    "matched_inputs": true,
+    "exactly_equal_trajectories": 4,
+    "maximum_absolute_difference": 0.0,
+    "checkpoint_sha256": "e5626f31d566c3090a0b7ad381e558a9ddcadfb7a1ffcba02172a9f0e29d840e"
+  }
+}
