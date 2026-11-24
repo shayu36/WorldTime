@@ -1,0 +1,20 @@
+{
+  "samples": 4,
+  "uint8_int64_scores_exactly_equal": true,
+  "diagnostic_only": true,
+  "metrics": {
+    "IoU": [
+      28.22,
+      28.09,
+      25.66,
+      24.64
+    ],
+    "mIoU": [
+      12.83,
+      11.27,
+      9.57,
+      8.43
+    ],
+    "classes": 17
+  }
+}

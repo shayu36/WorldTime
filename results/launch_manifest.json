@@ -1,0 +1,36 @@
+{
+  "started_utc": "2026-11-16T02:00:38.122928+00:00",
+  "source_checkpoint": "/data/jxy/projects/work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-t1-from-center2/epoch_3.pth",
+  "source_sha256": "bad9713741aa31373102e9769513ee52832359388990bfb9b365e9e9da40057c",
+  "head": "c562513beb0ba2f919c62d524f468d58ddb3bf85",
+  "argv": [
+    "/data/jxy/projects/env/bin/torchrun",
+    "--nproc_per_node=2",
+    "--master_port=29547",
+    "tools/train.py",
+    "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-planning-fusion.py",
+    "--work-dir",
+    "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3",
+    "--launcher",
+    "pytorch",
+    "--seed",
+    "17",
+    "--cfg-options",
+    "runner.max_epochs=1",
+    "data.samples_per_gpu=1",
+    "data.workers_per_gpu=1",
+    "log_config.interval=10"
+  ],
+  "runtime_env": {
+    "PYTHONPATH": "/data/jxy/projects",
+    "CUDA_VISIBLE_DEVICES": "0,1",
+    "NCCL_ASYNC_ERROR_HANDLING": "1",
+    "NCCL_P2P_DISABLE": "1",
+    "OMP_NUM_THREADS": "1",
+    "PYTORCH_CUDA_ALLOC_CONF": "backend:native"
+  },
+  "epochs": 1,
+  "trainable_prefix": "memory_planning_fusion.",
+  "tmux_session": "memory-planning-train",
+  "source_snapshot": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/source_snapshot"
+}

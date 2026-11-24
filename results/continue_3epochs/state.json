@@ -1,0 +1,244 @@
+{
+  "status": "complete",
+  "started_utc": "2026-11-16T09:10:02.179674+00:00",
+  "resume": {
+    "checkpoint": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/epoch_1.pth",
+    "sha256": "e5626f31d566c3090a0b7ad381e558a9ddcadfb7a1ffcba02172a9f0e29d840e",
+    "epoch": 1,
+    "iteration": 9865,
+    "frozen_keys": 766,
+    "frozen_unchanged": true,
+    "optimizer_states": 19,
+    "fp16_scaler": {
+      "loss_scaler": {
+        "scale": 1048576.0,
+        "growth_factor": 2.0,
+        "backoff_factor": 0.5,
+        "growth_interval": 2000,
+        "_growth_tracker": 1865
+      }
+    }
+  },
+  "target_epoch": 4,
+  "additional_epochs": 3,
+  "phase": "complete",
+  "commands": [
+    {
+      "phase": "train_epoch_2",
+      "argv": [
+        "/data/jxy/projects/env/bin/torchrun",
+        "--nproc_per_node=2",
+        "--master_port=29547",
+        "tools/train.py",
+        "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-planning-fusion.py",
+        "--work-dir",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3",
+        "--resume-from",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/epoch_1.pth",
+        "--launcher",
+        "pytorch",
+        "--seed",
+        "17",
+        "--cfg-options",
+        "runner.max_epochs=2",
+        "data.samples_per_gpu=1",
+        "data.workers_per_gpu=1",
+        "log_config.interval=20",
+        "checkpoint_config.max_keep_ckpts=-1"
+      ],
+      "log": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/train_epoch_2.log",
+      "exit_code": 0
+    },
+    {
+      "phase": "eval_epoch_2_predict",
+      "argv": [
+        "/data/jxy/projects/env/bin/torchrun",
+        "--nproc_per_node=2",
+        "--master_port=29548",
+        "tools/eval_memory_planning_joint.py",
+        "predict",
+        "--config",
+        "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-planning-fusion.py",
+        "--checkpoint",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/epoch_2.pth",
+        "--output",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all"
+      ],
+      "log": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/eval_epoch_2_predict.log",
+      "exit_code": 0
+    },
+    {
+      "phase": "eval_epoch_2_metrics",
+      "argv": [
+        "/data/jxy/projects/env/bin/python",
+        "-u",
+        "tools/eval_memory_planning_joint.py",
+        "score",
+        "--config",
+        "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-planning-fusion.py",
+        "--output",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all"
+      ],
+      "log": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/eval_epoch_2_metrics.log",
+      "exit_code": 0
+    },
+    {
+      "phase": "train_epoch_3",
+      "argv": [
+        "/data/jxy/projects/env/bin/torchrun",
+        "--nproc_per_node=2",
+        "--master_port=29547",
+        "tools/train.py",
+        "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-planning-fusion.py",
+        "--work-dir",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3",
+        "--resume-from",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/epoch_2.pth",
+        "--launcher",
+        "pytorch",
+        "--seed",
+        "17",
+        "--cfg-options",
+        "runner.max_epochs=3",
+        "data.samples_per_gpu=1",
+        "data.workers_per_gpu=1",
+        "log_config.interval=20",
+        "checkpoint_config.max_keep_ckpts=-1"
+      ],
+      "log": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/train_epoch_3.log",
+      "exit_code": 0
+    },
+    {
+      "phase": "eval_epoch_3_predict",
+      "argv": [
+        "/data/jxy/projects/env/bin/torchrun",
+        "--nproc_per_node=2",
+        "--master_port=29548",
+        "tools/eval_memory_planning_joint.py",
+        "predict",
+        "--config",
+        "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-planning-fusion.py",
+        "--checkpoint",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/epoch_3.pth",
+        "--output",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all"
+      ],
+      "log": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/eval_epoch_3_predict.log",
+      "exit_code": 0
+    },
+    {
+      "phase": "eval_epoch_3_metrics",
+      "argv": [
+        "/data/jxy/projects/env/bin/python",
+        "-u",
+        "tools/eval_memory_planning_joint.py",
+        "score",
+        "--config",
+        "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-planning-fusion.py",
+        "--output",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all"
+      ],
+      "log": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/eval_epoch_3_metrics.log",
+      "exit_code": 0
+    },
+    {
+      "phase": "train_epoch_4",
+      "argv": [
+        "/data/jxy/projects/env/bin/torchrun",
+        "--nproc_per_node=2",
+        "--master_port=29547",
+        "tools/train.py",
+        "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-planning-fusion.py",
+        "--work-dir",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3",
+        "--resume-from",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/epoch_3.pth",
+        "--launcher",
+        "pytorch",
+        "--seed",
+        "17",
+        "--cfg-options",
+        "runner.max_epochs=4",
+        "data.samples_per_gpu=1",
+        "data.workers_per_gpu=1",
+        "log_config.interval=20",
+        "checkpoint_config.max_keep_ckpts=-1"
+      ],
+      "log": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/train_epoch_4.log",
+      "exit_code": 0
+    },
+    {
+      "phase": "eval_epoch_4_predict",
+      "argv": [
+        "/data/jxy/projects/env/bin/torchrun",
+        "--nproc_per_node=2",
+        "--master_port=29548",
+        "tools/eval_memory_planning_joint.py",
+        "predict",
+        "--config",
+        "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-planning-fusion.py",
+        "--checkpoint",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/epoch_4.pth",
+        "--output",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all"
+      ],
+      "log": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/eval_epoch_4_predict.log",
+      "exit_code": 0
+    },
+    {
+      "phase": "eval_epoch_4_metrics",
+      "argv": [
+        "/data/jxy/projects/env/bin/python",
+        "-u",
+        "tools/eval_memory_planning_joint.py",
+        "score",
+        "--config",
+        "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-planning-fusion.py",
+        "--output",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all"
+      ],
+      "log": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/eval_epoch_4_metrics.log",
+      "exit_code": 0
+    },
+    {
+      "phase": "eval_epoch_1_predict",
+      "argv": [
+        "/data/jxy/projects/env/bin/torchrun",
+        "--nproc_per_node=2",
+        "--master_port=29548",
+        "tools/eval_memory_planning_joint.py",
+        "predict",
+        "--config",
+        "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-planning-fusion.py",
+        "--checkpoint",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/epoch_1.pth",
+        "--output",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all"
+      ],
+      "log": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/eval_epoch_1_predict.log",
+      "exit_code": 0
+    },
+    {
+      "phase": "eval_epoch_1_metrics",
+      "argv": [
+        "/data/jxy/projects/env/bin/python",
+        "-u",
+        "tools/eval_memory_planning_joint.py",
+        "score",
+        "--config",
+        "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-planning-fusion.py",
+        "--output",
+        "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all"
+      ],
+      "log": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/eval_epoch_1_metrics.log",
+      "exit_code": 0
+    }
+  ],
+  "evaluations": [
+    2,
+    3,
+    4,
+    1
+  ],
+  "completed_utc": "2026-11-16T20:43:08.058627+00:00"
+}

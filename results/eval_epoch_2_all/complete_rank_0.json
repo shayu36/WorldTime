@@ -1,0 +1,7 @@
+{
+  "samples": 2110,
+  "checkpoint_epoch": 2,
+  "world_size": 2,
+  "trajectory_sha256": "7ab21da59b05e6a777563af0fc77e07f92e32484a7b1b5ec9e868635105fab9b",
+  "elapsed_seconds": 1942.0384073501918
+}

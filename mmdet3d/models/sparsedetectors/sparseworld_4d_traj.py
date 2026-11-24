@@ -1704,13 +1704,18 @@ class SparseWorld4DTraj(OPUS):
             # correction stream.  It never enters the legacy STAC/refiner
             # path below, so baseline recurrence remains byte-for-byte in
             # terms of state topology.
-            memory_context = self._query_memory_context(
-                kwargs, img_metas, curr_query_feat.device,
-                curr_query_feat.dtype)
-            if memory_context is None:
-                raise RuntimeError(
-                    'FutureMemoryAdapter requires a cache memory context')
-            memory_valid = memory_context.get('memory_valid')
+            current_only = getattr(self.future_memory_adapter_v2, 'ablation_mode', 'full') == 'current_only_task_time'
+            if current_only:
+                memory_context = None
+                memory_valid = None
+            else:
+                memory_context = self._query_memory_context(
+                    kwargs, img_metas, curr_query_feat.device,
+                    curr_query_feat.dtype)
+                if memory_context is None:
+                    raise RuntimeError(
+                        'FutureMemoryAdapter requires a cache memory context')
+                memory_valid = memory_context.get('memory_valid')
             if isinstance(memory_valid, torch.Tensor) and memory_valid.numel():
                 if memory_valid.ndim >= 3:
                     valid_slots = memory_valid.any(dim=-1).float().sum(dim=-1)

@@ -1,0 +1,109 @@
+{
+  "checkpoint": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/epoch_4.pth",
+  "checkpoint_sha256": "69ae1d6caceb2dca3d19a704a9ec4659acb3b996ce14adaf8d4cf9274821940d",
+  "epoch": 4,
+  "occupancy_samples": 4219,
+  "planning_samples": 4219,
+  "planning_filter_total": 4819,
+  "occupancy": {
+    "IoU": [
+      25.68,
+      23.88,
+      22.86,
+      21.78
+    ],
+    "mIoU": [
+      18.2,
+      15.39,
+      13.4,
+      11.87
+    ],
+    "classes": 17
+  },
+  "planning": {
+    "samples": 4219,
+    "filter_total": 4819,
+    "prediction": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/trajectories.pkl",
+    "prediction_sha256": "e9f8f0c0b7e6f0f652fd1a53255776ea05cf2dbb4a39fceefc0a0f8d587b0258",
+    "metric_source_sha256": "c8ec9308b2883d8d689391d44db28f7ff747a5d133b1bf6f0d7415cf733d3563",
+    "metric_entry_sha256": "408c3b9e6fdf4ae0830c3ac5a99290ede6fa25650147733face36183e38b8374",
+    "gt_sha256": {
+      "stp3_traj_gt.pkl": "e97c44269025535f458fb1ddb2b53c375ae8e76f1169ec0df141a2a203c612ee",
+      "stp3_occupancy.pkl": "eacc3f314e7c5040c32092ffdd03043f95c3ce8dadff5ee16847f555865f45f8",
+      "filter_token.pkl": "05de82addec070dde998485ade21dc166ea4edc79f13dc737c476da6b11c6a66"
+    },
+    "per_step": {
+      "obj_col": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "obj_box_col": [
+        0.0009480919688940048,
+        0.0009480919688940048,
+        0.0007110689766705036,
+        0.0014221379533410072,
+        0.0014221379533410072,
+        0.001185114961117506
+      ],
+      "L2": [
+        0.1290697604417801,
+        0.19009168446063995,
+        0.20251670479774475,
+        0.2564001977443695,
+        0.3024670481681824,
+        0.35585594177246094
+      ]
+    },
+    "prefix": {
+      "1s": {
+        "obj_col": 0.0,
+        "obj_box_col": 0.0009480919688940048,
+        "L2": 0.15958072245121002,
+        "box_collision_percent": 0.09480919688940048
+      },
+      "2s": {
+        "obj_col": 0.0,
+        "obj_box_col": 0.0010073477169498801,
+        "L2": 0.19451957941055298,
+        "box_collision_percent": 0.10073477169498801
+      },
+      "3s": {
+        "obj_col": 0.0,
+        "obj_box_col": 0.0011061072582378983,
+        "L2": 0.2394002228975296,
+        "box_collision_percent": 0.11061072582378983
+      },
+      "mean_L2": 0.19783350825309753
+    },
+    "endpoint": {
+      "1s": {
+        "obj_col": 0.0,
+        "obj_box_col": 0.0009480919688940048,
+        "L2": 0.19009168446063995,
+        "box_collision_percent": 0.09480919688940048
+      },
+      "2s": {
+        "obj_col": 0.0,
+        "obj_box_col": 0.0014221379533410072,
+        "L2": 0.2564001977443695,
+        "box_collision_percent": 0.14221379533410072
+      },
+      "3s": {
+        "obj_col": 0.0,
+        "obj_box_col": 0.001185114961117506,
+        "L2": 0.35585594177246094,
+        "box_collision_percent": 0.1185114961117506
+      },
+      "mean_L2": 0.2674492746591568
+    }
+  },
+  "future_IoU": 22.84,
+  "future_mIoU": 13.553333333333333,
+  "mean_prefix_L2": 0.19783350825309753,
+  "mean_prefix_L2_delta": 3.129243850708008e-06,
+  "protocol": "Native occupancy evaluator; Baseline ST-P3 prefix planning plus endpoints; collision fractions in raw JSON"
+}

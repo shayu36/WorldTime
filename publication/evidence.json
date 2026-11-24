@@ -1,0 +1,698 @@
+[
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/publish_branch_verification_retry.log",
+    "published": "results/publish_branch_verification_retry.log.gz",
+    "original_sha256": "ac23f1a6c85a60bdede6d787ee3e1a3249ec26c52d010d3cf04b451b9f92c9ef",
+    "sha256": "58cb50f0280bf753c58c26f746a7b045195d92004ab6136055f722b56f09fbc9"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/20261116_121216.log.json",
+    "published": "results/20261116_121216.log.json",
+    "original_sha256": "ed4e8a444e7804ea806658cdba4b4a4630911f47b01571ff591c27f44e84fb25",
+    "sha256": "ed4e8a444e7804ea806658cdba4b4a4630911f47b01571ff591c27f44e84fb25"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/20261116_020046.log.json",
+    "published": "results/20261116_020046.log.json",
+    "original_sha256": "dedffb9b8a585eb826b4d28d47fbeb3e3ea314f8324835da6d677fcc4b13efe7",
+    "sha256": "dedffb9b8a585eb826b4d28d47fbeb3e3ea314f8324835da6d677fcc4b13efe7"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/20261116_170432.log.json",
+    "published": "results/20261116_170432.log.json",
+    "original_sha256": "833be8697689f6719c0b508273b48376d8d559e492b142e0f8a4880dd2ecb2f9",
+    "sha256": "833be8697689f6719c0b508273b48376d8d559e492b142e0f8a4880dd2ecb2f9"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/launch_manifest.json",
+    "published": "results/launch_manifest.json",
+    "original_sha256": "2fc0c5f9148f66a4b1bfb85535df7a51379fb7cf28ca6443156c53ff006b61f0",
+    "sha256": "2fc0c5f9148f66a4b1bfb85535df7a51379fb7cf28ca6443156c53ff006b61f0"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/publish_branch_verification.log",
+    "published": "results/publish_branch_verification.log.gz",
+    "original_sha256": "fdf3d60b79056bcfda930e4eef2007e583e1fc65c5804bc3328108602e75ff02",
+    "sha256": "f559d607b294b6816a4f1daddb93e3bb46495d0060b6422d02348fd0efed6eee"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/20261116_091009.log",
+    "published": "results/20261116_091009.log.gz",
+    "original_sha256": "9087391090a5ff964f42e96f8250ae0cda7e298d0d4d1129f4210bcc09f652cf",
+    "sha256": "413ec103e6d3794bd72293190597de53026ecb87691515265fd269728e1ff762"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/completion_check.json",
+    "published": "results/completion_check.json",
+    "original_sha256": "3454b40bf8f229e5a885b313b98be2731547adc0ace14fda3bb0276bd82f88a7",
+    "sha256": "3454b40bf8f229e5a885b313b98be2731547adc0ace14fda3bb0276bd82f88a7"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/20261116_091009.log.json",
+    "published": "results/20261116_091009.log.json",
+    "original_sha256": "ab3ebc5e7bf867706276f7df855dd309926424f34a31522c83ec2dc86b123a99",
+    "sha256": "ab3ebc5e7bf867706276f7df855dd309926424f34a31522c83ec2dc86b123a99"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/planning_all_epochs_summary.json",
+    "published": "results/planning_all_epochs_summary.json",
+    "original_sha256": "0ecc8ac791efc09eed02d4b9bd4f0920f2d1c6e2d5555ed9e51ea158c98cb7eb",
+    "sha256": "0ecc8ac791efc09eed02d4b9bd4f0920f2d1c6e2d5555ed9e51ea158c98cb7eb"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/20261116_170432.log",
+    "published": "results/20261116_170432.log.gz",
+    "original_sha256": "6b4edab4008844c3ee65366986d899f52d9e820f6f2a287baea2bbda126710ab",
+    "sha256": "7b4e1e6798cdf9772dded667d731f7303f30c9987888ff2d51e6b83c93f571d4"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/planning_all_epochs_summary.md",
+    "published": "results/planning_all_epochs_summary.md",
+    "original_sha256": "d3d013aebca82f688859a20c6d1b50e901e58037d2de8df0c5b0919967c1aaf2",
+    "sha256": "d3d013aebca82f688859a20c6d1b50e901e58037d2de8df0c5b0919967c1aaf2"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/20261116_020046.log",
+    "published": "results/20261116_020046.log.gz",
+    "original_sha256": "05202b72e32ddfbc216a5026ae5c4e8d44c46b3a6ef2972e5327b6b8ab2a03b6",
+    "sha256": "1d0a9b15d1f340de7c352a88bad844c2f5ecb7edbde68700c7f72b8b58ff4741"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/sparseworld-traj-memory-planning-fusion.py",
+    "published": "results/sparseworld-traj-memory-planning-fusion.py",
+    "original_sha256": "6459e17361dfa23cc7993e5ca99494bcd694cec8940a6265942a8e329d6e9465",
+    "sha256": "6459e17361dfa23cc7993e5ca99494bcd694cec8940a6265942a8e329d6e9465"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/console.log",
+    "published": "results/console.log.gz",
+    "original_sha256": "619591c61973be32158eb916b5800962d0f9bcaecbd96972863cc6f8afdc4e56",
+    "sha256": "0f642758e251bc35d541db29be11b4a519debf8e061c9dc097ce31e3d6fcb35a"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/20261116_121216.log",
+    "published": "results/20261116_121216.log.gz",
+    "original_sha256": "2de367d87e801834a488058c36b2f1b7376fd5480776d86b70428afdbbfe1b82",
+    "sha256": "a34b0792550ef371e830e0508093d325667432ededddb8fb48597f68de8db544"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/launch.sh",
+    "published": "results/launch.sh",
+    "original_sha256": "5064af26b47459b64fa15a9d54106baef52db4f898195fc2e7b62c746c5ea197",
+    "sha256": "5064af26b47459b64fa15a9d54106baef52db4f898195fc2e7b62c746c5ea197"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/exit_code",
+    "published": "results/exit_code",
+    "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/eval_epoch_4_predict.log",
+    "published": "results/continue_3epochs/eval_epoch_4_predict.log.gz",
+    "original_sha256": "0ed66e5d4b2516f38a0aa7f0b84db4d26c5af2240f07baa8968fbdddf59beb52",
+    "sha256": "a8dfb02887e983eab6728637812fe0c8df567f5a43198b02c939c1cb74158d79"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/train_epoch_3.log",
+    "published": "results/continue_3epochs/train_epoch_3.log.gz",
+    "original_sha256": "31b3dc8676f2c567f676ef196e3fda735328d6cd391f694169ef04616dc1bbb1",
+    "sha256": "f45bbbf9fb10292d94accf1f728f4802ec660431ecf8604f950ae4b99c87abf2"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/eval_epoch_1_metrics.log",
+    "published": "results/continue_3epochs/eval_epoch_1_metrics.log.gz",
+    "original_sha256": "00bd4c9670e74f3184e676cab1695000fe8b57f09319ed207f18a5f9bedc2365",
+    "sha256": "788229279006ecfb92acc1756780a56186cf286dbb0363fc919fba7df58616f7"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/joint_probe.log",
+    "published": "results/continue_3epochs/joint_probe.log.gz",
+    "original_sha256": "829ea4243022858c5ca10289bfeb21c8b547c01a4793c179292639084b11a705",
+    "sha256": "d69a00d81730977e0a0373c5b5d7ca2fe5c3cfcfbc47bd8216e4f2f426a6d548"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/train_epoch_4.log",
+    "published": "results/continue_3epochs/train_epoch_4.log.gz",
+    "original_sha256": "a13762f687e3f543680a8ccab203a1911bc81aebb473793a09577ab7f283f963",
+    "sha256": "d7cca1a803a19503d48e076f069052640f32628a3c1501341415afd869f8fdfc"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/launch_manifest.json",
+    "published": "results/continue_3epochs/launch_manifest.json",
+    "original_sha256": "137e4a4ea852be6cd358d9af1adcdde9f8e51c99fcb409a7bf4b8148398e728f",
+    "sha256": "137e4a4ea852be6cd358d9af1adcdde9f8e51c99fcb409a7bf4b8148398e728f"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/checkpoint_epoch_3_check.json",
+    "published": "results/continue_3epochs/checkpoint_epoch_3_check.json",
+    "original_sha256": "ba40947129a0127dac0690424f91d52d0cc962e051d986fba224ed212ff815f6",
+    "sha256": "ba40947129a0127dac0690424f91d52d0cc962e051d986fba224ed212ff815f6"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/eval_epoch_3_predict.log",
+    "published": "results/continue_3epochs/eval_epoch_3_predict.log.gz",
+    "original_sha256": "556155b996149818f14db90c1bd1a00e37199d9a0651b5ee704d2c02ec1bfcc6",
+    "sha256": "ea3af57a5730c1065e40b4221aac6e5d563f7e848cfc0873143dc9fecd3dbf63"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/controller.log",
+    "published": "results/continue_3epochs/controller.log.gz",
+    "original_sha256": "fff05ab6fa56112e86446c0164fbae750cf44920be220872b12e453508acb5e3",
+    "sha256": "c501756ae1aadc1562d45f26f7a8f8b057d55c2eddc83ee597b1c2ee68865eb9"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/train_epoch_2.log",
+    "published": "results/continue_3epochs/train_epoch_2.log.gz",
+    "original_sha256": "54a1a1fec8af5c58a9318b3c447f7d58a1d22933639d2d3d7b8629f10798a078",
+    "sha256": "78c2272ddbf0018f6c90d1000624927d51bff5aaab9cd173b33f03eec1b309b8"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/checkpoint_epoch_4_check.json",
+    "published": "results/continue_3epochs/checkpoint_epoch_4_check.json",
+    "original_sha256": "35b041963b716bf192f1f9fc202e9b74ca39762ebf1c74e250c5ac0c3476de0f",
+    "sha256": "35b041963b716bf192f1f9fc202e9b74ca39762ebf1c74e250c5ac0c3476de0f"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/checkpoint_epoch_2_check.json",
+    "published": "results/continue_3epochs/checkpoint_epoch_2_check.json",
+    "original_sha256": "fca80ccd47a7094f0b1fb727a14ac31202dc5cb005a42da38c3f130559ca9b02",
+    "sha256": "fca80ccd47a7094f0b1fb727a14ac31202dc5cb005a42da38c3f130559ca9b02"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/eval_epoch_1_predict.log",
+    "published": "results/continue_3epochs/eval_epoch_1_predict.log.gz",
+    "original_sha256": "0db80a367e1e355ce5edaa1e35d643c375d99d3d6b3998fda37ad45408b26796",
+    "sha256": "275abe2d185a2b7cea57a8c56ef66b4b4bdc601300cda26cc37e9a3e934e1e22"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/state.json",
+    "published": "results/continue_3epochs/state.json",
+    "original_sha256": "82527ef70fb02fa080cf522fde15d0a098ab92f0e03fb2c3009cb7e133cd7c53",
+    "sha256": "82527ef70fb02fa080cf522fde15d0a098ab92f0e03fb2c3009cb7e133cd7c53"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/eval_epoch_2_predict.log",
+    "published": "results/continue_3epochs/eval_epoch_2_predict.log.gz",
+    "original_sha256": "ffca7ce319402df078fa1aa795d135524d57c0a0a0cf5859b271ff87202efdc6",
+    "sha256": "6b08b59efa442285fa6c686eb7ba39c981563627d8defc1c4fc28d1c0b236548"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/eval_epoch_2_metrics.log",
+    "published": "results/continue_3epochs/eval_epoch_2_metrics.log.gz",
+    "original_sha256": "43c0900aa901a405fe6268cc11403dd6b96f85ea90b0492c3ca1a7c20f30d074",
+    "sha256": "17820718134375f4caf2def84bb7f3354c835f146150422be64e24cc2ec721d7"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/launch.sh",
+    "published": "results/continue_3epochs/launch.sh",
+    "original_sha256": "6c49d978ce7d473519ab60639422871732ea96363682561cba03af88f868fb24",
+    "sha256": "6c49d978ce7d473519ab60639422871732ea96363682561cba03af88f868fb24"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/eval_epoch_4_metrics.log",
+    "published": "results/continue_3epochs/eval_epoch_4_metrics.log.gz",
+    "original_sha256": "e521542f5ce508f3e229957cc28339ab45d2f7a7ee6ddfdc850bf9c552c63478",
+    "sha256": "0a8fa8f26f5dd9fc95785a32726101bbe90342766585dc6be0933c87c86c0a67"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/source_hashes.json",
+    "published": "results/continue_3epochs/source_hashes.json",
+    "original_sha256": "bd3e6b77d3306ea54cbb5798d971a48f5dd77b07b05d4ea0d05491db432c8c95",
+    "sha256": "bd3e6b77d3306ea54cbb5798d971a48f5dd77b07b05d4ea0d05491db432c8c95"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/eval_epoch_3_metrics.log",
+    "published": "results/continue_3epochs/eval_epoch_3_metrics.log.gz",
+    "original_sha256": "dfc3e5878455879b9dccea9f986360205b45e9591fa459cb143f9c979b011a20",
+    "sha256": "cffb823f3ead2af4740a4c95839a457b01525727a8a754428d6596ade27d7357"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/exit_code",
+    "published": "results/continue_3epochs/exit_code",
+    "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/joint_probe/complete_rank_0.json",
+    "published": "results/continue_3epochs/joint_probe/complete_rank_0.json",
+    "original_sha256": "eb691ee73e9cc84ec7235873c11de74d89d8877192b783b40bf500e5dc58865f",
+    "sha256": "eb691ee73e9cc84ec7235873c11de74d89d8877192b783b40bf500e5dc58865f"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/joint_probe/provenance_rank_1.json",
+    "published": "results/continue_3epochs/joint_probe/provenance_rank_1.json",
+    "original_sha256": "14385f0f04ef0caae7c20da2e2e486d6136dc4383b661dd8c22e995f7971d18e",
+    "sha256": "14385f0f04ef0caae7c20da2e2e486d6136dc4383b661dd8c22e995f7971d18e"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/joint_probe/trajectories_rank_0.pkl",
+    "published": "results/continue_3epochs/joint_probe/trajectories_rank_0.pkl",
+    "original_sha256": "375acdee55f49459d39b997124bd5e8d6926bbde52cfe15a791731f4171cfc04",
+    "sha256": "375acdee55f49459d39b997124bd5e8d6926bbde52cfe15a791731f4171cfc04"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/joint_probe/progress_rank_0.jsonl",
+    "published": "results/continue_3epochs/joint_probe/progress_rank_0.jsonl.gz",
+    "original_sha256": "22c66622c1509488980cf56c82668cb7726bda2a4c19ff1a013f482a12b416ae",
+    "sha256": "50b98008e1430e836c9fe3b40e61257ff3ea55b56871f817ef8e420407d87b5b"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/joint_probe/complete_rank_1.json",
+    "published": "results/continue_3epochs/joint_probe/complete_rank_1.json",
+    "original_sha256": "4434478926ce0aab70141a137f310e3feb69eaa7456370c4fb3386e37466227e",
+    "sha256": "4434478926ce0aab70141a137f310e3feb69eaa7456370c4fb3386e37466227e"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/joint_probe/trajectories_rank_1.pkl",
+    "published": "results/continue_3epochs/joint_probe/trajectories_rank_1.pkl",
+    "original_sha256": "834194bd605d494b6ec47070657083d6143b94cd2a8a4f81987987b4d0cff978",
+    "sha256": "834194bd605d494b6ec47070657083d6143b94cd2a8a4f81987987b4d0cff978"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/joint_probe/progress_rank_1.jsonl",
+    "published": "results/continue_3epochs/joint_probe/progress_rank_1.jsonl.gz",
+    "original_sha256": "1061e8cd95ce46431ae25165e0ac8d5cf966186737c1d48ca0d107821d260a8d",
+    "sha256": "bcd0494f34aaa51a68cdc8ce82aa11db35851ebdac4798c184b8f53e0586b428"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/joint_probe/occupancy_evaluator_probe.json",
+    "published": "results/continue_3epochs/joint_probe/occupancy_evaluator_probe.json",
+    "original_sha256": "ede408b85d2c5fc7d8a943232a01a0a012bad3f487acf067575411ba4d146537",
+    "sha256": "ede408b85d2c5fc7d8a943232a01a0a012bad3f487acf067575411ba4d146537"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/joint_probe/effective_config.py",
+    "published": "results/continue_3epochs/joint_probe/effective_config.py",
+    "original_sha256": "13224d1e8369abee71cd412d31863394f24f6101cda5f460786879167761e059",
+    "sha256": "13224d1e8369abee71cd412d31863394f24f6101cda5f460786879167761e059"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/joint_probe/manifest.json",
+    "published": "results/continue_3epochs/joint_probe/manifest.json",
+    "original_sha256": "b4527d0a8aea3a3f6e448906a6c6b3452055c51146641f0fc7d6e1fcc1009de9",
+    "sha256": "b4527d0a8aea3a3f6e448906a6c6b3452055c51146641f0fc7d6e1fcc1009de9"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/joint_probe/provenance_rank_0.json",
+    "published": "results/continue_3epochs/joint_probe/provenance_rank_0.json",
+    "original_sha256": "b6febbb2a639ae26badad3ebe17e5a4efb21e8164b7f18151b1d063474ba89c3",
+    "sha256": "b6febbb2a639ae26badad3ebe17e5a4efb21e8164b7f18151b1d063474ba89c3"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/joint_probe/trajectories.pkl",
+    "published": "results/continue_3epochs/joint_probe/trajectories.pkl",
+    "original_sha256": "e1265ea7af00c85aaa2ae45662f9f7a3f28619ff268d5317e913042f40f14609",
+    "sha256": "e1265ea7af00c85aaa2ae45662f9f7a3f28619ff268d5317e913042f40f14609"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs/joint_probe/probe_verification.json",
+    "published": "results/continue_3epochs/joint_probe/probe_verification.json",
+    "original_sha256": "8fe7d0330777b1c601f73c59f59de26e051c0db4c458f3b56ee21ea36a64de36",
+    "sha256": "8fe7d0330777b1c601f73c59f59de26e051c0db4c458f3b56ee21ea36a64de36"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/complete_rank_0.json",
+    "published": "results/eval_epoch_1_all/complete_rank_0.json",
+    "original_sha256": "10e2b21cc056f47518d474012b0da4a439d04aeb49757a777d436aeadbf42936",
+    "sha256": "10e2b21cc056f47518d474012b0da4a439d04aeb49757a777d436aeadbf42936"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/provenance_rank_1.json",
+    "published": "results/eval_epoch_1_all/provenance_rank_1.json",
+    "original_sha256": "3998f9c7d50db8d3bee100120b1037d2c4ec974e57e686485430650b8edaa1e3",
+    "sha256": "3998f9c7d50db8d3bee100120b1037d2c4ec974e57e686485430650b8edaa1e3"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/trajectories_rank_0.pkl",
+    "published": "results/eval_epoch_1_all/trajectories_rank_0.pkl",
+    "original_sha256": "5773b571c6bdaeb9f1abdbe6ee0fee52be07208df170ccc70619037ac2d72756",
+    "sha256": "5773b571c6bdaeb9f1abdbe6ee0fee52be07208df170ccc70619037ac2d72756"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/progress_rank_0.jsonl",
+    "published": "results/eval_epoch_1_all/progress_rank_0.jsonl.gz",
+    "original_sha256": "399e5fc01886340b1b8f6a1d8db19b51bf008cb508ff2dd05dc794e6a5efdeb1",
+    "sha256": "7ead7c8cde78b42548e77f0faf7e6d01dd8c8805326ac5e860795aa7c6fb1ebb"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/complete_rank_1.json",
+    "published": "results/eval_epoch_1_all/complete_rank_1.json",
+    "original_sha256": "7d9b16281eda55740d966c034267576d4317c8a5661365bc62ae44a476b1fa89",
+    "sha256": "7d9b16281eda55740d966c034267576d4317c8a5661365bc62ae44a476b1fa89"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/trajectories_rank_1.pkl",
+    "published": "results/eval_epoch_1_all/trajectories_rank_1.pkl",
+    "original_sha256": "35865b9805cb6e89fdd6c98b15e7c9a94e9e752db77c0da56cc93188e30e4d40",
+    "sha256": "35865b9805cb6e89fdd6c98b15e7c9a94e9e752db77c0da56cc93188e30e4d40"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/progress_rank_1.jsonl",
+    "published": "results/eval_epoch_1_all/progress_rank_1.jsonl.gz",
+    "original_sha256": "cbb96a926233ebead569668a0250305f4a11b9fb540546a8b37513798f8715e9",
+    "sha256": "9abb0056fe5fb82dfca52b9e6c71de9b1aa161255bc4405065ae5aee43421c88"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/complete.json",
+    "published": "results/eval_epoch_1_all/complete.json",
+    "original_sha256": "6b1eec41335d20860bd49bf780aff1350c55fed954fcf04df8d1968db5df8fc4",
+    "sha256": "6b1eec41335d20860bd49bf780aff1350c55fed954fcf04df8d1968db5df8fc4"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/occupancy_metrics.json",
+    "published": "results/eval_epoch_1_all/occupancy_metrics.json",
+    "original_sha256": "61975e3f20283e68ae073df33b461f2bc930c59852fcb64d7a9c8fb23f0b7ee0",
+    "sha256": "61975e3f20283e68ae073df33b461f2bc930c59852fcb64d7a9c8fb23f0b7ee0"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/effective_config.py",
+    "published": "results/eval_epoch_1_all/effective_config.py",
+    "original_sha256": "13224d1e8369abee71cd412d31863394f24f6101cda5f460786879167761e059",
+    "sha256": "13224d1e8369abee71cd412d31863394f24f6101cda5f460786879167761e059"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/occupancy_confusion_matrices.npz",
+    "published": "results/eval_epoch_1_all/occupancy_confusion_matrices.npz",
+    "original_sha256": "30de60b1e9cc9c78507b37b7d807cf66e2bbfcf186563eb54155c5ca663d55b9",
+    "sha256": "30de60b1e9cc9c78507b37b7d807cf66e2bbfcf186563eb54155c5ca663d55b9"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/manifest.json",
+    "published": "results/eval_epoch_1_all/manifest.json",
+    "original_sha256": "ac45c234949344f47e36282c3edc6839f1ab4a5524ea8ac958c0f94c10911cf2",
+    "sha256": "ac45c234949344f47e36282c3edc6839f1ab4a5524ea8ac958c0f94c10911cf2"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/all_metrics.json",
+    "published": "results/eval_epoch_1_all/all_metrics.json",
+    "original_sha256": "870099e8f568045af67caf870cbfbc8d6accce8d4317076cef736d75aedcd22e",
+    "sha256": "870099e8f568045af67caf870cbfbc8d6accce8d4317076cef736d75aedcd22e"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/provenance_rank_0.json",
+    "published": "results/eval_epoch_1_all/provenance_rank_0.json",
+    "original_sha256": "034acde5472f3441d8e5a8877e4e734b9c96a8b64760eace354375fafcd66010",
+    "sha256": "034acde5472f3441d8e5a8877e4e734b9c96a8b64760eace354375fafcd66010"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/trajectories.pkl",
+    "published": "results/eval_epoch_1_all/trajectories.pkl",
+    "original_sha256": "eaf7136ac94e20edcc927917f9e7c1f72d33bbe647d8dac90c407e8ae13c2aea",
+    "sha256": "eaf7136ac94e20edcc927917f9e7c1f72d33bbe647d8dac90c407e8ae13c2aea"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/planning_metrics.json",
+    "published": "results/eval_epoch_1_all/planning_metrics.json",
+    "original_sha256": "922f2b8b000c4df2fdb52b8f16fd595401e9906790f17d1dc874b8446aa1a027",
+    "sha256": "922f2b8b000c4df2fdb52b8f16fd595401e9906790f17d1dc874b8446aa1a027"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all/complete_rank_0.json",
+    "published": "results/eval_epoch_2_all/complete_rank_0.json",
+    "original_sha256": "a2453834b88adb28c177f843d3201789b901b6a0c81318c31b288df7c7553694",
+    "sha256": "a2453834b88adb28c177f843d3201789b901b6a0c81318c31b288df7c7553694"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all/provenance_rank_1.json",
+    "published": "results/eval_epoch_2_all/provenance_rank_1.json",
+    "original_sha256": "ee63b4c785d0d38b5920fb5e9530d94abc0208cdc9083acd2b01c9308faba72b",
+    "sha256": "ee63b4c785d0d38b5920fb5e9530d94abc0208cdc9083acd2b01c9308faba72b"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all/trajectories_rank_0.pkl",
+    "published": "results/eval_epoch_2_all/trajectories_rank_0.pkl",
+    "original_sha256": "7ab21da59b05e6a777563af0fc77e07f92e32484a7b1b5ec9e868635105fab9b",
+    "sha256": "7ab21da59b05e6a777563af0fc77e07f92e32484a7b1b5ec9e868635105fab9b"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all/progress_rank_0.jsonl",
+    "published": "results/eval_epoch_2_all/progress_rank_0.jsonl.gz",
+    "original_sha256": "399e5fc01886340b1b8f6a1d8db19b51bf008cb508ff2dd05dc794e6a5efdeb1",
+    "sha256": "7ead7c8cde78b42548e77f0faf7e6d01dd8c8805326ac5e860795aa7c6fb1ebb"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all/complete_rank_1.json",
+    "published": "results/eval_epoch_2_all/complete_rank_1.json",
+    "original_sha256": "2a1de12f7a247a6195b80121f06c107ddf818fb4a6aaabc1a9ef4aeecf549e00",
+    "sha256": "2a1de12f7a247a6195b80121f06c107ddf818fb4a6aaabc1a9ef4aeecf549e00"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all/trajectories_rank_1.pkl",
+    "published": "results/eval_epoch_2_all/trajectories_rank_1.pkl",
+    "original_sha256": "4def87e006ab0a2ded16807446e933a666f0d1b3bce1d560aac73fd6d21a7979",
+    "sha256": "4def87e006ab0a2ded16807446e933a666f0d1b3bce1d560aac73fd6d21a7979"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all/progress_rank_1.jsonl",
+    "published": "results/eval_epoch_2_all/progress_rank_1.jsonl.gz",
+    "original_sha256": "cbb96a926233ebead569668a0250305f4a11b9fb540546a8b37513798f8715e9",
+    "sha256": "9abb0056fe5fb82dfca52b9e6c71de9b1aa161255bc4405065ae5aee43421c88"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all/complete.json",
+    "published": "results/eval_epoch_2_all/complete.json",
+    "original_sha256": "85c9f881b163d332ed6494d796893f6fd34fdc45ddb1351ceb4aa9300b7863ad",
+    "sha256": "85c9f881b163d332ed6494d796893f6fd34fdc45ddb1351ceb4aa9300b7863ad"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all/occupancy_metrics.json",
+    "published": "results/eval_epoch_2_all/occupancy_metrics.json",
+    "original_sha256": "61975e3f20283e68ae073df33b461f2bc930c59852fcb64d7a9c8fb23f0b7ee0",
+    "sha256": "61975e3f20283e68ae073df33b461f2bc930c59852fcb64d7a9c8fb23f0b7ee0"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all/effective_config.py",
+    "published": "results/eval_epoch_2_all/effective_config.py",
+    "original_sha256": "13224d1e8369abee71cd412d31863394f24f6101cda5f460786879167761e059",
+    "sha256": "13224d1e8369abee71cd412d31863394f24f6101cda5f460786879167761e059"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all/occupancy_confusion_matrices.npz",
+    "published": "results/eval_epoch_2_all/occupancy_confusion_matrices.npz",
+    "original_sha256": "30de60b1e9cc9c78507b37b7d807cf66e2bbfcf186563eb54155c5ca663d55b9",
+    "sha256": "30de60b1e9cc9c78507b37b7d807cf66e2bbfcf186563eb54155c5ca663d55b9"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all/manifest.json",
+    "published": "results/eval_epoch_2_all/manifest.json",
+    "original_sha256": "ac45c234949344f47e36282c3edc6839f1ab4a5524ea8ac958c0f94c10911cf2",
+    "sha256": "ac45c234949344f47e36282c3edc6839f1ab4a5524ea8ac958c0f94c10911cf2"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all/all_metrics.json",
+    "published": "results/eval_epoch_2_all/all_metrics.json",
+    "original_sha256": "3de6a40c4f8b152cfce5c190280d2ed303db58398377b3d842b6f04a8add998b",
+    "sha256": "3de6a40c4f8b152cfce5c190280d2ed303db58398377b3d842b6f04a8add998b"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all/provenance_rank_0.json",
+    "published": "results/eval_epoch_2_all/provenance_rank_0.json",
+    "original_sha256": "b49555d84a9c51a7cdf6bd6c84a56796df28abcdfeaf893e4f4fa02d9ef675e5",
+    "sha256": "b49555d84a9c51a7cdf6bd6c84a56796df28abcdfeaf893e4f4fa02d9ef675e5"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all/trajectories.pkl",
+    "published": "results/eval_epoch_2_all/trajectories.pkl",
+    "original_sha256": "efdbf129e218bcfa0a0a504f42c4abe664d805163026af1ff8a1a97f386b27cd",
+    "sha256": "efdbf129e218bcfa0a0a504f42c4abe664d805163026af1ff8a1a97f386b27cd"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all/planning_metrics.json",
+    "published": "results/eval_epoch_2_all/planning_metrics.json",
+    "original_sha256": "c80fb729acf92c49e5189fcbd1b87c4a0eeb39f837fe746a4954cf835a8015a0",
+    "sha256": "c80fb729acf92c49e5189fcbd1b87c4a0eeb39f837fe746a4954cf835a8015a0"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all/complete_rank_0.json",
+    "published": "results/eval_epoch_3_all/complete_rank_0.json",
+    "original_sha256": "3ea3224d353be9856f2d4ef7b82dc9a24df733fa994e0d8ec6fdc2dc8d07b066",
+    "sha256": "3ea3224d353be9856f2d4ef7b82dc9a24df733fa994e0d8ec6fdc2dc8d07b066"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all/provenance_rank_1.json",
+    "published": "results/eval_epoch_3_all/provenance_rank_1.json",
+    "original_sha256": "db5e2fa06e4d187fccf40c9fb9484342dd5985f2c805458af5262797fb83292f",
+    "sha256": "db5e2fa06e4d187fccf40c9fb9484342dd5985f2c805458af5262797fb83292f"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all/trajectories_rank_0.pkl",
+    "published": "results/eval_epoch_3_all/trajectories_rank_0.pkl",
+    "original_sha256": "71befbb945860dd978722164a648e1aa39f6d3b21583efa176dedc23862fd5e1",
+    "sha256": "71befbb945860dd978722164a648e1aa39f6d3b21583efa176dedc23862fd5e1"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all/progress_rank_0.jsonl",
+    "published": "results/eval_epoch_3_all/progress_rank_0.jsonl.gz",
+    "original_sha256": "399e5fc01886340b1b8f6a1d8db19b51bf008cb508ff2dd05dc794e6a5efdeb1",
+    "sha256": "7ead7c8cde78b42548e77f0faf7e6d01dd8c8805326ac5e860795aa7c6fb1ebb"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all/complete_rank_1.json",
+    "published": "results/eval_epoch_3_all/complete_rank_1.json",
+    "original_sha256": "d0017b6e7687ee887170209eed1bfb8887fd61888847c1a4af1102dac7249597",
+    "sha256": "d0017b6e7687ee887170209eed1bfb8887fd61888847c1a4af1102dac7249597"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all/trajectories_rank_1.pkl",
+    "published": "results/eval_epoch_3_all/trajectories_rank_1.pkl",
+    "original_sha256": "007231e5df67e19e87bc51d358274442a35693c30acea2d892fd86df4fc94869",
+    "sha256": "007231e5df67e19e87bc51d358274442a35693c30acea2d892fd86df4fc94869"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all/progress_rank_1.jsonl",
+    "published": "results/eval_epoch_3_all/progress_rank_1.jsonl.gz",
+    "original_sha256": "cbb96a926233ebead569668a0250305f4a11b9fb540546a8b37513798f8715e9",
+    "sha256": "9abb0056fe5fb82dfca52b9e6c71de9b1aa161255bc4405065ae5aee43421c88"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all/complete.json",
+    "published": "results/eval_epoch_3_all/complete.json",
+    "original_sha256": "99e2db81250cbbcffc94f017f132b98109ffbe9cc1897ac8c48386350d7678fc",
+    "sha256": "99e2db81250cbbcffc94f017f132b98109ffbe9cc1897ac8c48386350d7678fc"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all/occupancy_metrics.json",
+    "published": "results/eval_epoch_3_all/occupancy_metrics.json",
+    "original_sha256": "61975e3f20283e68ae073df33b461f2bc930c59852fcb64d7a9c8fb23f0b7ee0",
+    "sha256": "61975e3f20283e68ae073df33b461f2bc930c59852fcb64d7a9c8fb23f0b7ee0"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all/effective_config.py",
+    "published": "results/eval_epoch_3_all/effective_config.py",
+    "original_sha256": "13224d1e8369abee71cd412d31863394f24f6101cda5f460786879167761e059",
+    "sha256": "13224d1e8369abee71cd412d31863394f24f6101cda5f460786879167761e059"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all/occupancy_confusion_matrices.npz",
+    "published": "results/eval_epoch_3_all/occupancy_confusion_matrices.npz",
+    "original_sha256": "30de60b1e9cc9c78507b37b7d807cf66e2bbfcf186563eb54155c5ca663d55b9",
+    "sha256": "30de60b1e9cc9c78507b37b7d807cf66e2bbfcf186563eb54155c5ca663d55b9"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all/manifest.json",
+    "published": "results/eval_epoch_3_all/manifest.json",
+    "original_sha256": "ac45c234949344f47e36282c3edc6839f1ab4a5524ea8ac958c0f94c10911cf2",
+    "sha256": "ac45c234949344f47e36282c3edc6839f1ab4a5524ea8ac958c0f94c10911cf2"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all/all_metrics.json",
+    "published": "results/eval_epoch_3_all/all_metrics.json",
+    "original_sha256": "108b0fac47cf421dfd4ff4db0a455640fe45833d32814bb427e831c886d9fbdb",
+    "sha256": "108b0fac47cf421dfd4ff4db0a455640fe45833d32814bb427e831c886d9fbdb"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all/provenance_rank_0.json",
+    "published": "results/eval_epoch_3_all/provenance_rank_0.json",
+    "original_sha256": "0f9f57f1fe390f97ad17d0e7c39efcd933c57399f8cf33ca77563a92655af719",
+    "sha256": "0f9f57f1fe390f97ad17d0e7c39efcd933c57399f8cf33ca77563a92655af719"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all/trajectories.pkl",
+    "published": "results/eval_epoch_3_all/trajectories.pkl",
+    "original_sha256": "021c7f36125b410820d9e5e65c7bffc403d19bd16702e311bda157531864dcf3",
+    "sha256": "021c7f36125b410820d9e5e65c7bffc403d19bd16702e311bda157531864dcf3"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all/planning_metrics.json",
+    "published": "results/eval_epoch_3_all/planning_metrics.json",
+    "original_sha256": "4b9058eb3ce7ab459b4672e415b8e5ae5a39b78c67fb8e776aa6bbfa0c820b9c",
+    "sha256": "4b9058eb3ce7ab459b4672e415b8e5ae5a39b78c67fb8e776aa6bbfa0c820b9c"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/complete_rank_0.json",
+    "published": "results/eval_epoch_4_all/complete_rank_0.json",
+    "original_sha256": "56f401b43cd26c162fb008d06a258848291d5328fde403d6c292f11397777a32",
+    "sha256": "56f401b43cd26c162fb008d06a258848291d5328fde403d6c292f11397777a32"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/provenance_rank_1.json",
+    "published": "results/eval_epoch_4_all/provenance_rank_1.json",
+    "original_sha256": "ff9952fa65298bdda1eac1fa81cfd683e22ea1d72003316026f4bec653abc8b4",
+    "sha256": "ff9952fa65298bdda1eac1fa81cfd683e22ea1d72003316026f4bec653abc8b4"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/trajectories_rank_0.pkl",
+    "published": "results/eval_epoch_4_all/trajectories_rank_0.pkl",
+    "original_sha256": "e54b6d0dc5a31deff3d7f4a75af45ada9d9ae0ad3491f7a1930a10cf5ccab20e",
+    "sha256": "e54b6d0dc5a31deff3d7f4a75af45ada9d9ae0ad3491f7a1930a10cf5ccab20e"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/progress_rank_0.jsonl",
+    "published": "results/eval_epoch_4_all/progress_rank_0.jsonl.gz",
+    "original_sha256": "399e5fc01886340b1b8f6a1d8db19b51bf008cb508ff2dd05dc794e6a5efdeb1",
+    "sha256": "7ead7c8cde78b42548e77f0faf7e6d01dd8c8805326ac5e860795aa7c6fb1ebb"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/complete_rank_1.json",
+    "published": "results/eval_epoch_4_all/complete_rank_1.json",
+    "original_sha256": "49a07a6a22f4ccccc547295c9df273749279423322ac289ea6d0093758213de2",
+    "sha256": "49a07a6a22f4ccccc547295c9df273749279423322ac289ea6d0093758213de2"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/trajectories_rank_1.pkl",
+    "published": "results/eval_epoch_4_all/trajectories_rank_1.pkl",
+    "original_sha256": "76e73616c846e24212663e63437f81f4eb258992d6dcb5211978ef7653963d40",
+    "sha256": "76e73616c846e24212663e63437f81f4eb258992d6dcb5211978ef7653963d40"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/progress_rank_1.jsonl",
+    "published": "results/eval_epoch_4_all/progress_rank_1.jsonl.gz",
+    "original_sha256": "cbb96a926233ebead569668a0250305f4a11b9fb540546a8b37513798f8715e9",
+    "sha256": "9abb0056fe5fb82dfca52b9e6c71de9b1aa161255bc4405065ae5aee43421c88"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/complete.json",
+    "published": "results/eval_epoch_4_all/complete.json",
+    "original_sha256": "5bdd72ead1a521e7ae0b358057fc7c432bfd079bd4f2fbccb1b2044dae1c1a03",
+    "sha256": "5bdd72ead1a521e7ae0b358057fc7c432bfd079bd4f2fbccb1b2044dae1c1a03"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/occupancy_metrics.json",
+    "published": "results/eval_epoch_4_all/occupancy_metrics.json",
+    "original_sha256": "61975e3f20283e68ae073df33b461f2bc930c59852fcb64d7a9c8fb23f0b7ee0",
+    "sha256": "61975e3f20283e68ae073df33b461f2bc930c59852fcb64d7a9c8fb23f0b7ee0"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/effective_config.py",
+    "published": "results/eval_epoch_4_all/effective_config.py",
+    "original_sha256": "13224d1e8369abee71cd412d31863394f24f6101cda5f460786879167761e059",
+    "sha256": "13224d1e8369abee71cd412d31863394f24f6101cda5f460786879167761e059"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/occupancy_confusion_matrices.npz",
+    "published": "results/eval_epoch_4_all/occupancy_confusion_matrices.npz",
+    "original_sha256": "30de60b1e9cc9c78507b37b7d807cf66e2bbfcf186563eb54155c5ca663d55b9",
+    "sha256": "30de60b1e9cc9c78507b37b7d807cf66e2bbfcf186563eb54155c5ca663d55b9"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/manifest.json",
+    "published": "results/eval_epoch_4_all/manifest.json",
+    "original_sha256": "ac45c234949344f47e36282c3edc6839f1ab4a5524ea8ac958c0f94c10911cf2",
+    "sha256": "ac45c234949344f47e36282c3edc6839f1ab4a5524ea8ac958c0f94c10911cf2"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/all_metrics.json",
+    "published": "results/eval_epoch_4_all/all_metrics.json",
+    "original_sha256": "dc8d33520ef61a393a702910719f0a187aac3dc23fec2586cf240c8be19ebe9d",
+    "sha256": "dc8d33520ef61a393a702910719f0a187aac3dc23fec2586cf240c8be19ebe9d"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/provenance_rank_0.json",
+    "published": "results/eval_epoch_4_all/provenance_rank_0.json",
+    "original_sha256": "74a574d6f6717ccfc8fcf6fc5ffdf93570a3661abc3cb7a3be1bedcbe77a0e52",
+    "sha256": "74a574d6f6717ccfc8fcf6fc5ffdf93570a3661abc3cb7a3be1bedcbe77a0e52"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/trajectories.pkl",
+    "published": "results/eval_epoch_4_all/trajectories.pkl",
+    "original_sha256": "e9f8f0c0b7e6f0f652fd1a53255776ea05cf2dbb4a39fceefc0a0f8d587b0258",
+    "sha256": "e9f8f0c0b7e6f0f652fd1a53255776ea05cf2dbb4a39fceefc0a0f8d587b0258"
+  },
+  {
+    "source": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/planning_metrics.json",
+    "published": "results/eval_epoch_4_all/planning_metrics.json",
+    "original_sha256": "ad116ab592eeb85175d5bafe173d0d62f3b0335517e1ce0b282889cf9b18a27e",
+    "sha256": "ad116ab592eeb85175d5bafe173d0d62f3b0335517e1ce0b282889cf9b18a27e"
+  }
+]

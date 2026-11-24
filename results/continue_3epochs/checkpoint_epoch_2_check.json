@@ -1,0 +1,18 @@
+{
+  "checkpoint": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/epoch_2.pth",
+  "sha256": "2cd48c40d445a0945abebd4132e2c56a1a990610929a2e20867a6af9ba760fab",
+  "epoch": 2,
+  "iteration": 19730,
+  "frozen_keys": 766,
+  "frozen_unchanged": true,
+  "optimizer_states": 19,
+  "fp16_scaler": {
+    "loss_scaler": {
+      "scale": 33554432.0,
+      "growth_factor": 2.0,
+      "backoff_factor": 0.5,
+      "growth_interval": 2000,
+      "_growth_tracker": 1730
+    }
+  }
+}

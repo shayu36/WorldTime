@@ -1,0 +1,146 @@
+[
+  {
+    "epoch": 1,
+    "IoU": [
+      25.68,
+      23.88,
+      22.86,
+      21.78
+    ],
+    "mIoU": [
+      18.2,
+      15.39,
+      13.4,
+      11.87
+    ],
+    "Future_IoU": 22.84,
+    "Future_mIoU": 13.553333333333333,
+    "prefix_L2": [
+      0.15968641638755798,
+      0.19473332166671753,
+      0.23966270685195923
+    ],
+    "prefix_Obj_percent": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "prefix_Box_percent": [
+      0.09480919688940048,
+      0.10073477169498801,
+      0.11061072582378983
+    ],
+    "mean_L2": 0.1980274816354116,
+    "mean_L2_delta": 0.00019710262616476348,
+    "checkpoint_sha256": "e5626f31d566c3090a0b7ad381e558a9ddcadfb7a1ffcba02172a9f0e29d840e",
+    "results": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/all_metrics.json"
+  },
+  {
+    "epoch": 2,
+    "IoU": [
+      25.68,
+      23.88,
+      22.86,
+      21.78
+    ],
+    "mIoU": [
+      18.2,
+      15.39,
+      13.4,
+      11.87
+    ],
+    "Future_IoU": 22.84,
+    "Future_mIoU": 13.553333333333333,
+    "prefix_L2": [
+      0.15961459279060364,
+      0.19457823038101196,
+      0.23941819369792938
+    ],
+    "prefix_Obj_percent": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "prefix_Box_percent": [
+      0.09480919688940048,
+      0.09480919688940048,
+      0.10270996717736125
+    ],
+    "mean_L2": 0.19787033895651499,
+    "mean_L2_delta": 3.995994726815888e-05,
+    "checkpoint_sha256": "2cd48c40d445a0945abebd4132e2c56a1a990610929a2e20867a6af9ba760fab",
+    "results": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_2_all/all_metrics.json"
+  },
+  {
+    "epoch": 3,
+    "IoU": [
+      25.68,
+      23.88,
+      22.86,
+      21.78
+    ],
+    "mIoU": [
+      18.2,
+      15.39,
+      13.4,
+      11.87
+    ],
+    "Future_IoU": 22.84,
+    "Future_mIoU": 13.553333333333333,
+    "prefix_L2": [
+      0.1595962643623352,
+      0.19455638527870178,
+      0.23939760029315948
+    ],
+    "prefix_Obj_percent": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "prefix_Box_percent": [
+      0.10666034650057554,
+      0.11258592130616307,
+      0.11456111678853631
+    ],
+    "mean_L2": 0.19785008331139883,
+    "mean_L2_delta": 1.9704302152007136e-05,
+    "checkpoint_sha256": "67591fa23e5afd8541ba4da196ad0f752847018c5385bd641a96537371e3076d",
+    "results": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all/all_metrics.json"
+  },
+  {
+    "epoch": 4,
+    "IoU": [
+      25.68,
+      23.88,
+      22.86,
+      21.78
+    ],
+    "mIoU": [
+      18.2,
+      15.39,
+      13.4,
+      11.87
+    ],
+    "Future_IoU": 22.84,
+    "Future_mIoU": 13.553333333333333,
+    "prefix_L2": [
+      0.15958072245121002,
+      0.19451957941055298,
+      0.2394002228975296
+    ],
+    "prefix_Obj_percent": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "prefix_Box_percent": [
+      0.09480919688940048,
+      0.10073477169498801,
+      0.11061072582378983
+    ],
+    "mean_L2": 0.19783350825309753,
+    "mean_L2_delta": 3.129243850708008e-06,
+    "checkpoint_sha256": "69ae1d6caceb2dca3d19a704a9ec4659acb3b996ce14adaf8d4cf9274821940d",
+    "results": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_4_all/all_metrics.json"
+  }
+]

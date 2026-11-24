@@ -1,0 +1,39 @@
+{
+  "checkpoint": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/epoch_3.pth",
+  "checkpoint_sha256": "67591fa23e5afd8541ba4da196ad0f752847018c5385bd641a96537371e3076d",
+  "checkpoint_epoch": 3,
+  "config_sha256": "982b53e6376b6b947e7d660e2603c50e7c9226a9f9d363824ce8a15e8916cff8",
+  "rank": 1,
+  "world_size": 2,
+  "source_commit": "c562513beb0ba2f919c62d524f468d58ddb3bf85",
+  "source_sha256": {
+    "mmdet3d/models/sparsedetectors/sparseworld_4d_traj.py": "a5b51d4fc5aacb6e41a5f51fa33541b02cec70d7c8b945076e8e4a0271824887",
+    "mmdet3d/models/sparsedetectors/sparseworld_memory_planning.py": "dd679a13a5f4b9f299049d2b4c2065f1328a05b0dfc9040b005a752621577f01",
+    "mmdet3d/models/sparsedetectors/memory_planning_fusion.py": "4653ddcfbb9d72be945eff1166be5700a7b2471973de0d0b3be0e581e2e52b14",
+    "mmdet3d/models/sparsedetectors/query_memory.py": "6083c16932bef4afeed93e310eeba28652357f8842ba2d946b25ba3666796907",
+    "mmdet3d/datasets/nuscenes_dataset_occ_trajectory.py": "1d3d0f3708f4cab0ddca5582fd7fe85ad1f71c0dfdeff1ffbd38f8590ab00bd0",
+    "mmdet3d/datasets/pipelines/loading_query_memory.py": "0eaa4ba6a0d5a4aed8fd9db549b2be01208e63d3985b8c0f27f52ac5b6475df9"
+  },
+  "exporter_sha256": "a78644489da29d06667c9a9fef7de61c44f6e5b51cfb30a4004c45427deefe71",
+  "samples": 2109,
+  "total_samples": 4219,
+  "command": [
+    "tools/eval_memory_planning_joint.py",
+    "predict",
+    "--config",
+    "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-planning-fusion.py",
+    "--checkpoint",
+    "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/epoch_3.pth",
+    "--output",
+    "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_3_all"
+  ],
+  "native_model_call": "MMDataParallel(return_loss=False,rescale=True)",
+  "trajectory_format": "np.cumsum(native pred_traj increments, axis=1), current-frame XY",
+  "occupancy_steps": [
+    0,
+    2,
+    4,
+    6
+  ],
+  "occupancy_dtype": "uint8 lossless 0..17"
+}

@@ -1,0 +1,38 @@
+{
+  "samples": 4,
+  "checkpoint_epoch": 1,
+  "both_gpu_ranks_completed": true,
+  "no_duplicate_tokens": true,
+  "trajectories_exactly_equal_existing_epoch1": true,
+  "occupancy_shapes": [
+    [
+      1,
+      4,
+      200,
+      200,
+      16
+    ],
+    [
+      1,
+      4,
+      200,
+      200,
+      16
+    ],
+    [
+      1,
+      4,
+      200,
+      200,
+      16
+    ],
+    [
+      1,
+      4,
+      200,
+      200,
+      16
+    ]
+  ],
+  "occupancy_dtype": "uint8 lossless 0..17"
+}

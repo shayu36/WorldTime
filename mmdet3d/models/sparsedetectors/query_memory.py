@@ -1712,14 +1712,43 @@ class FutureMemoryAdapterV2(nn.Module):
                  point_geometry_head_fraction=0.5,
                  gate_bias=-1.0, dropout=0.0, pc_range=None,
                  voxel_size=(0.4, 0.4, 0.4), gate_mode='shared',
-                 horizon_gate_bias=False, **kwargs):
+                 horizon_gate_bias=False, history_slot_limit=None,
+                 memory_read_mode='point', memory_gate_mode=None,
+                 ablation_mode='full', current_point_support_fraction=1.0,
+                 **kwargs):
         super().__init__()
         del kwargs
         if int(embed_dims) % int(num_heads) != 0:
             raise ValueError('FutureMemoryAdapterV2 requires embed_dims % num_heads == 0')
         self.embed_dims = int(embed_dims)
-        if gate_mode not in ('shared', 'task_split'):
-            raise ValueError('gate_mode must be shared or task_split')
+        if ablation_mode not in ('full', 'full_retrieval_concat', 'current_only_task_time'):
+            raise ValueError(f'Unknown ablation_mode: {ablation_mode}')
+        self.ablation_mode = ablation_mode
+        self.current_point_support_fraction = float(current_point_support_fraction)
+        if not 0.0 < self.current_point_support_fraction <= 1.0:
+            raise ValueError('current_point_support_fraction must be in (0, 1]')
+        if ablation_mode != 'current_only_task_time' and self.current_point_support_fraction != 1.0:
+            raise ValueError('partial current-point support requires current_only_task_time')
+        if ablation_mode != 'full':
+            memory_read_mode, memory_gate_mode = 'point', 'task_horizon'
+        if memory_read_mode not in ('global', 'query', 'point'):
+            raise ValueError('memory_read_mode must be global, query or point')
+        self.memory_read_mode = memory_read_mode
+        # Explicit RecallOcc interface takes precedence over the legacy A/B
+        # options inherited by older configs. None preserves that old API.
+        if memory_gate_mode is not None:
+            if memory_gate_mode not in ('none', 'shared', 'task_horizon'):
+                raise ValueError('memory_gate_mode must be none, shared or task_horizon')
+            gate_mode = ('none' if memory_gate_mode == 'none' else
+                         'shared' if memory_gate_mode == 'shared' else 'task_split')
+            horizon_gate_bias = memory_gate_mode == 'task_horizon'
+        self.memory_gate_mode = memory_gate_mode or (
+            'shared' if gate_mode == 'shared' else
+            ('task_horizon' if horizon_gate_bias else 'task_split'))
+        if gate_mode not in ('none', 'shared', 'task_split'):
+            raise ValueError('gate_mode must be none, shared or task_split')
+        if (memory_read_mode == 'global') != (gate_mode == 'none'):
+            raise ValueError('global read and no-gate mode must be used together')
         if horizon_gate_bias and gate_mode != 'task_split':
             raise ValueError('horizon_gate_bias requires task_split')
         self.gate_mode = gate_mode
@@ -1728,6 +1757,12 @@ class FutureMemoryAdapterV2(nn.Module):
         self.num_points = int(num_points)
         self.num_heads = int(num_heads)
         self.head_dim = self.embed_dims // self.num_heads
+        # D5 read-side ablation. Slot order follows the fixed target ages
+        # (2.5, 3.5, 4.5 s); None preserves the original all-slot behavior.
+        self.history_slot_limit = (None if history_slot_limit is None else
+                                   int(history_slot_limit))
+        if self.history_slot_limit is not None and self.history_slot_limit < 1:
+            raise ValueError('history_slot_limit must be positive or None')
         self.coarse_topk_geometry = max(int(coarse_topk_geometry), 1)
         self.coarse_topk_semantic = max(int(coarse_topk_semantic), 1)
         self.point_topk = max(int(point_topk), 1)
@@ -1814,8 +1849,46 @@ class FutureMemoryAdapterV2(nn.Module):
             # [horizon, task], task order = semantic, occupancy, position.
             self.task_horizon_bias = nn.Parameter(
                 torch.zeros(len(self.HORIZON_SECONDS), 3))
+        if self.memory_read_mode in ('query', 'global'):
+            # Construct in the original order first (stable common RNG), then
+            # remove only modules exclusive to the point read. This leaves no
+            # unused trainable parameters for DDP and creates no new modules.
+            for name in self.POINT_READ_MODULES:
+                delattr(self, name)
+        if self.memory_read_mode == 'global':
+            # E1-lite uses a plain valid-Query mean. Remove all learnable
+            # retrieval and gate modules so DDP never sees unused parameters.
+            for name in self.GLOBAL_UNUSED_MODULES:
+                delattr(self, name)
+
+        # Keep the default constructor and RNG order unchanged. New modes
+        # remove unused modules, and replace only the fusion input projection.
+        if self.ablation_mode == 'full_retrieval_concat':
+            self.adapter_input_dims = 4 * self.embed_dims + 2 * self.num_classes
+            self.gate_mode = 'none'
+            self.memory_gate_mode = 'none'
+            self.use_horizon_gate_bias = False
+            for name in ('gate_head', 'gate_occ_head', 'gate_pos_head', 'task_horizon_bias'):
+                delattr(self, name)
+        elif self.ablation_mode == 'current_only_task_time':
+            self.adapter_input_dims = 3 * self.embed_dims + self.num_classes
+            for name in self.POINT_READ_MODULES + self.GLOBAL_UNUSED_MODULES[:-1] + ('aligner',):
+                delattr(self, name)
+        if self.ablation_mode != 'full':
+            self.adapter[0] = nn.Linear(self.adapter_input_dims, self.embed_dims * 2)
+
+    POINT_READ_MODULES = (
+        'point_query_proj', 'point_key_proj', 'point_value_proj',
+        'memory_point_pos', 'semantic_query_proj', 'semantic_memory_proj')
+    GLOBAL_UNUSED_MODULES = (
+        'query_norm', 'memory_norm', 'query_proj', 'key_proj',
+        'value_proj', 'out_proj', 'gate_head')
+
     def task_gates(self, adapted, horizon_id):
         """Return independent semantic, occupancy and position point gates."""
+        if self.gate_mode == 'none':
+            gate = torch.ones_like(adapted[..., :1])
+            return gate, gate, gate
         if self.gate_mode == 'shared':
             gate = torch.sigmoid(self.gate_head(adapted))
             return gate, gate, gate
@@ -1846,7 +1919,7 @@ class FutureMemoryAdapterV2(nn.Module):
         B, Q, _ = query_feat.shape
         z = query_feat.new_zeros
         empty_gate = z(B, Q, self.num_points, 1)
-        if self.gate_mode == 'task_split' and torch.is_grad_enabled():
+        if torch.is_grad_enabled():
             # A completely empty Memory rank must still join DDP reductions.
             anchor = sum(p.reshape(-1)[0] * 0. for p in self.parameters())
             empty_gate = empty_gate + anchor
@@ -1894,6 +1967,57 @@ class FutureMemoryAdapterV2(nn.Module):
                 horizon_seconds=float(self.HORIZON_SECONDS[horizon_id]),
                 point_attention_shape=(B, 0, self.num_points, self.num_heads, 0)))
 
+    def _forward_current(self, query, points, logits, horizon_id, diagnostics):
+        """Current prediction at this horizon; no historical fields are read.
+
+        OPUS supplies dense prediction points without padding. Their adapter
+        validity is one; GT-derived supervision masks stay in the loss path.
+        """
+        B, Q, C = query.shape
+        count = Q * self.num_points
+        if self.current_point_support_fraction == 1.0:
+            support = None  # Preserve the original E3 arithmetic exactly.
+        else:
+            # A fixed permutation gives the same number of eligible points at
+            # every horizon, independent of Memory, labels and model outputs.
+            from math import gcd
+            # Golden-ratio stride spreads eligibility across adjacent points
+            # and Queries; the coprime adjustment makes it a permutation.
+            stride = int(count * 0.6180339887498949)
+            while gcd(stride, count) != 1:
+                stride += 1
+            indices = torch.arange(count, device=query.device, dtype=torch.long)
+            rank = (indices * stride + 17 * (horizon_id + 1)) % count
+            support = (rank < int(count * self.current_point_support_fraction)).view(
+                1, Q, self.num_points, 1).expand(B, -1, -1, -1)
+        h = self.horizon_embedding.weight[horizon_id].to(query).view(1, 1, 1, C)
+        # Same current semantic distribution as the full adapter, without
+        # retrieval uncertainty/dropout/statistics or historical placeholders.
+        pi = torch.nan_to_num(logits.float(), nan=0., posinf=30., neginf=-30.).softmax(-1).to(query.dtype)
+        chunks = []
+        for start in range(0, Q, self.query_chunk_size):
+            stop = min(start + self.query_chunk_size, Q)
+            q = query[:, start:stop, None].expand(-1, -1, self.num_points, -1)
+            pe = self.current_point_pos(points[:, start:stop].float()).to(query.dtype)
+            f = self.adapter(torch.cat([q, pe, pi[:, start:stop], h.expand_as(q)], -1))
+            gs, go, gp = self.task_gates(f, horizon_id)
+            chunks.append((self.delta_s_head(f), self.delta_o_head(f),
+                           self.delta_p_head(f), gs, go, gp))
+        ds, do, dp, gs, go, gp = [torch.cat(xs, 1) for xs in zip(*chunks)]
+        if support is not None:
+            gs, go, gp = (gate * support.to(gate.dtype) for gate in (gs, go, gp))
+        out = dict(delta_s=ds, delta_o=do, delta_p=dp, gate=gs,
+                   gate_sem=gs, gate_occ=go, gate_pos=gp, point_gate=gs)
+        if diagnostics:
+            out['diagnostics'] = dict(
+                current_point_valid=torch.ones_like(gs[..., 0], dtype=torch.bool),
+                current_point_support=(torch.ones_like(gs[..., 0], dtype=torch.bool)
+                                       if support is None else support[..., 0]),
+                current_point_support_fraction=self.current_point_support_fraction,
+                memory_disabled=True, point_read_executed=False,
+                horizon_seconds=float(self.HORIZON_SECONDS[horizon_id]))
+        return out
+
     def _semantics(self, memory, B, N, device, dtype):
         sem = memory.get('memory_semantic_distribution')
         labels = memory.get('memory_label')
@@ -1908,7 +2032,7 @@ class FutureMemoryAdapterV2(nn.Module):
                 if valid.any():
                     sem[valid] = F.one_hot(labels[valid], self.num_classes).to(dtype)
         else:
-            sem = sem.to(device=device, dtype=dtype).reshape(B, N, -1)
+            sem = sem.to(device=device, dtype=dtype).reshape(B, N, sem.shape[-1])
             if sem.shape[-1] != self.num_classes or not torch.isfinite(sem).all() or (sem < 0).any():
                 raise ValueError('memory semantic distribution is invalid')
             sem = sem / sem.sum(-1, keepdim=True).clamp_min(_EPS)
@@ -2069,6 +2193,121 @@ class FutureMemoryAdapterV2(nn.Module):
         return context_heads * head_valid.unsqueeze(-1).to(
             context_heads.dtype)
 
+    def _forward_global(self, query_feat, query_points_metric, baseline_logits,
+                        flat, horizon_id, return_diagnostics):
+        """E1-lite: one unweighted mean of all valid history Queries per sample.
+
+        There is no current-Query retrieval, no point attention, and no
+        learnable gate. The pooled history is shared across all Queries and
+        prediction points; the downstream residual MLP still sees each point's
+        position and current semantic distribution.
+        """
+        B, Q, C = query_feat.shape
+        R = self.num_points
+        N = flat['feat'].shape[1]
+        hs = float(self.HORIZON_SECONDS[horizon_id])
+        effective_age = flat['base_age'] + hs
+        valid = (flat['valid'] & torch.isfinite(flat['rel']) &
+                 (flat['rel'] > 0) & torch.isfinite(effective_age) &
+                 (effective_age > 0) & (effective_age <= self.max_effective_age))
+        count = valid.sum(-1)
+        denominator = count.clamp_min(1).float()
+
+        def mean(value):
+            clean = torch.where(valid.reshape(*valid.shape, *([1] * (value.dim() - 2))),
+                                value.float(), torch.zeros_like(value.float()))
+            return clean.sum(1) / denominator.reshape(B, *([1] * (value.dim() - 2)))
+
+        memory_feat = mean(flat['feat']).to(query_feat.dtype)
+        memory_sem = mean(flat['semantic']).to(query_feat.dtype)
+        memory_rel = mean(flat['rel']).to(query_feat.dtype)
+        memory_age = mean(effective_age).to(query_feat.dtype)
+        expand = lambda value: value[:, None, None].expand(B, Q, R, *value.shape[1:])
+        context = expand(memory_feat)
+        point_memory_semantic = expand(memory_sem)
+        has = count.gt(0)[:, None, None].expand(B, Q, R)
+        h = self.horizon_embedding.weight[horizon_id].to(query_feat).view(
+            1, 1, 1, C).expand(B, Q, R, C)
+        qpos = self.current_point_pos(query_points_metric.float()).to(query_feat.dtype)
+        (point_semantic, _retrieval_semantic, semantic_entropy, uncertainty,
+         margin, semantic_weight, retrieval_semantic_weight,
+         dropped) = self._semantic_features(baseline_logits)
+        semantic_difference, semantic_cosine, semantic_js = \
+            self.semantic_disagreement_features(
+                point_semantic, point_memory_semantic, has)
+        shared_count = count[:, None, None].expand(B, Q, R)
+        shared_rel = memory_rel[:, None, None].expand(B, Q, R)
+        shared_age = memory_age[:, None, None].expand(B, Q, R)
+        scalar_features = torch.stack([
+            shared_count.float() / max(N, 1),
+            shared_count.float() / max(N, 1),
+            shared_rel,
+            (shared_age / (self.max_effective_age + _EPS)).clamp(0, 1),
+            torch.zeros_like(shared_rel),
+            uncertainty, margin, semantic_weight,
+            semantic_cosine, semantic_js,
+        ], -1).to(query_feat.dtype)
+        qexpanded = query_feat.unsqueeze(2).expand(-1, -1, R, -1)
+        delta_s = query_feat.new_zeros(B, Q, R, self.num_classes)
+        delta_o = query_feat.new_zeros(B, Q, R, 1)
+        delta_p = query_feat.new_zeros(B, Q, R, 3)
+        for start in range(0, Q, self.query_chunk_size):
+            stop = min(Q, start + self.query_chunk_size)
+            adapter_input = torch.cat([
+                qexpanded[:, start:stop], qpos[:, start:stop],
+                context[:, start:stop],
+                qexpanded[:, start:stop] - context[:, start:stop],
+                h[:, start:stop],
+                point_semantic[:, start:stop].to(query_feat.dtype),
+                point_memory_semantic[:, start:stop],
+                semantic_difference[:, start:stop].to(query_feat.dtype),
+                scalar_features[:, start:stop]], -1)
+            adapted = self.adapter(adapter_input)
+            delta_s[:, start:stop] = self.delta_s_head(adapted)
+            delta_o[:, start:stop] = self.delta_o_head(adapted)
+            delta_p[:, start:stop] = self.delta_p_head(adapted)
+        # The downstream decoder already multiplies each residual by its
+        # corresponding gate.  An exact binary validity mask keeps the existing
+        # no-history identity rule without adding a learnable Gate.
+        gate = has.unsqueeze(-1).to(query_feat.dtype)
+        delta_s = delta_s * gate
+        delta_o = delta_o * gate
+        delta_p = delta_p * gate
+        if not return_diagnostics:
+            return dict(delta_s=delta_s, delta_o=delta_o, delta_p=delta_p,
+                        gate=gate, point_gate=gate, gate_sem=gate,
+                        gate_occ=gate, gate_pos=gate)
+        diagnostics = dict(
+            has_candidate=has.detach(), memory_read_mode='global',
+            point_read_executed=False,
+            global_valid_count=count.detach(),
+            readable_memory_queries=count.detach(),
+            eligible_point_count=shared_count.detach(),
+            selected_point_count=shared_count.detach(),
+            point_semantic_current=point_semantic.detach(),
+            point_semantic_memory=point_memory_semantic.detach(),
+            semantic_entropy=semantic_entropy.detach(),
+            semantic_uncertainty=uncertainty.detach(),
+            semantic_margin=margin.detach(),
+            semantic_weight=semantic_weight.detach(),
+            retrieval_semantic_weight=retrieval_semantic_weight.detach(),
+            semantic_dropout_mask=dropped.detach(),
+            semantic_difference=semantic_difference.detach(),
+            semantic_cosine=semantic_cosine.detach(),
+            semantic_js_divergence=semantic_js.detach(),
+            support_reliability=shared_rel.detach(),
+            support_age=shared_age.detach(),
+            base_age=flat['base_age'].detach(),
+            effective_age=effective_age.detach(),
+            horizon_seconds=hs,
+            point_attention_shape=(B, 0, R, self.num_heads, 0))
+        return dict(delta_s=delta_s, delta_o=delta_o, delta_p=delta_p,
+                    gate=gate, point_gate=gate, gate_sem=gate,
+                    gate_occ=gate, gate_pos=gate,
+                    context=context, point_context=context,
+                    attention_query=torch.zeros_like(context),
+                    diagnostics=diagnostics)
+
     def _coarse(self, query, points, sem, sem_weight, flat, effective_age, horizon):
         B, Q, _ = query.shape
         N = flat['feat'].shape[1]
@@ -2108,9 +2347,28 @@ class FutureMemoryAdapterV2(nn.Module):
         horizon_id = int(horizon_id)
         if horizon_id not in (0, 1, 2):
             raise ValueError('horizon_id must be 0, 1, or 2')
+        if self.ablation_mode == 'current_only_task_time':
+            return self._forward_current(query_feat, query_points_metric, baseline_logits,
+                                         horizon_id, return_diagnostics)
         if memory is None or not memory:
             return self._empty(query_feat, horizon_id)
         memory_for_read = dict(memory)
+        if self.history_slot_limit is not None:
+            original_valid = memory_for_read['memory_valid']
+            if original_valid.dim() not in (2, 3):
+                raise ValueError(
+                    'history slot mask expects memory_valid [K,M] or [B,K,M]')
+            slot_count = original_valid.shape[-2]
+            if self.history_slot_limit > slot_count:
+                raise ValueError(
+                    f'history_slot_limit={self.history_slot_limit} exceeds '
+                    f'available slots={slot_count}')
+            visible = torch.arange(
+                slot_count, device=original_valid.device) < self.history_slot_limit
+            visible = visible.view(
+                *((1,) * (original_valid.dim() - 2)), slot_count, 1)
+            # Never change the loader output or the fixed cache in place.
+            memory_for_read['memory_valid'] = original_valid.bool() & visible
         source_ego = memory_for_read.get('memory_source_ego2global')
         if source_ego is not None and target_ego2global is not None:
             raw_points = memory_for_read['memory_points_metric'].to(
@@ -2130,6 +2388,10 @@ class FutureMemoryAdapterV2(nn.Module):
         N = flat['feat'].shape[1]
         if N == 0:
             return self._empty(query_feat, horizon_id)
+        if self.memory_read_mode == 'global':
+            return self._forward_global(
+                query_feat, query_points_metric, baseline_logits,
+                flat, horizon_id, return_diagnostics)
         hs = float(self.HORIZON_SECONDS[horizon_id])
         h = self.horizon_embedding.weight[horizon_id].to(query_feat).view(1, 1, 1, C).expand(B, Q, self.num_points, C)
         (point_semantic, retrieval_semantic, semantic_entropy, uncertainty,
@@ -2158,7 +2420,8 @@ class FutureMemoryAdapterV2(nn.Module):
         semantic_point_weight_mass = query_feat.new_zeros(
             B, Q, self.num_points, self.num_heads - self.num_geometry_heads)
         max_L = 0
-        qbase = self.point_query_proj(self.query_norm(query_feat)).unsqueeze(2)
+        if self.memory_read_mode == 'point':
+            qbase = self.point_query_proj(self.query_norm(query_feat)).unsqueeze(2)
         qpos = self.current_point_pos(query_points_metric.float()).to(query_feat.dtype)
         coarse_v = self.value_proj(self.memory_norm(flat['feat']))
         # Build two candidate-internal coarse reads.  Geometry and semantic
@@ -2210,137 +2473,168 @@ class FutureMemoryAdapterV2(nn.Module):
             geometry_mix[..., None] * geometry_coarse_weights +
             semantic_mix[..., None] * semantic_coarse_weights)
 
-        # [B,Q,R,C]. Current qpoint conditions point attention, but is not
-        # itself added to the returned historical Point Memory Context.
-        semantic_query = self.semantic_query_proj(
-            retrieval_semantic.to(self.semantic_query_proj.weight.dtype)).to(
-                query_feat.dtype)
-        head_is_geometry = torch.arange(
-            self.num_heads, device=query_feat.device) < self.num_geometry_heads
-        head_is_geometry = head_is_geometry.view(1, 1, 1, self.num_heads, 1)
-        # Build the Point-Attention query per chunk instead of materialising
-        # geometry and semantic versions for every active Query at once.  The
-        # returned attention_query is an audit snapshot and is intentionally
-        # detached; gradients still flow through each chunk's qpoint into the
-        # point-query projection while the context is computed.
-        attention_query = (query_feat.new_empty(
-            B, Q, self.num_points, C) if return_diagnostics else None)
-        for start in range(0, Q, self.query_chunk_size):
-            stop = min(Q, start + self.query_chunk_size)
-            idx = coarse_idx[:, start:stop].clamp_min(0); cv = coarse_valid[:, start:stop]
-            bi = torch.arange(B, device=query_feat.device)[:, None, None]
-            mf = flat['feat'][bi, idx]; ms = flat['semantic'][bi, idx]; mp = flat['points'][bi, idx]
-            mk = coarse_k[bi, idx]; mv = coarse_v[bi, idx]
-            mr = flat['rel'][bi, idx]; ma = effective_age[bi, idx]
-            rm = mp.shape[-2]; L = Ku * rm; max_L = max(max_L, L)
-            hf = mf.unsqueeze(-2).expand(-1, -1, -1, rm, -1).reshape(B, stop-start, L, C)
-            hk_query = mk.unsqueeze(-2).expand(-1, -1, -1, rm, -1).reshape(B, stop-start, L, C)
-            hv_query = mv.unsqueeze(-2).expand(-1, -1, -1, rm, -1).reshape(B, stop-start, L, C)
-            hsx = ms.unsqueeze(-2).expand(-1, -1, -1, rm, -1).reshape(B, stop-start, L, self.num_classes)
-            hp = mp.reshape(B, stop-start, L, 3)
-            hr = mr.unsqueeze(-1).expand(-1, -1, -1, rm).reshape(B, stop-start, L)
-            ha = ma.unsqueeze(-1).expand(-1, -1, -1, rm).reshape(B, stop-start, L)
-            hvld = flat['valid'][bi, idx] & (ma > 0) & (ma <= self.max_effective_age)
-            hvld = hvld.unsqueeze(-1).expand(-1, -1, -1, rm).reshape(B, stop-start, L)
-            coarse_point_valid = cv.unsqueeze(-1).expand(-1, -1, -1, rm).reshape(B, stop-start, L)
-            hvld = hvld & coarse_point_valid
-            chunk_geometry_union_valid = geometry_union_valid[:, start:stop]
-            geometry_point_valid = chunk_geometry_union_valid.unsqueeze(-1).expand(
-                -1, -1, -1, rm).reshape(B, stop-start, L)
-            geometry_hvld = hvld & geometry_point_valid
-            qpos_chunk = qpos[:, start:stop]
-            qpoint_geometry = (
-                qbase[:, start:stop] + qpos_chunk +
-                h[:, start:stop] +
-                geometry_coarse_context[:, start:stop].unsqueeze(2))
-            qpoint_semantic = (
-                qbase[:, start:stop] + qpos_chunk +
-                h[:, start:stop] + coarse_context[:, start:stop].unsqueeze(2) +
-                semantic_query[:, start:stop])
-            qpoint_geometry_heads = qpoint_geometry.float().view(
-                B, stop - start, self.num_points, self.num_heads, -1)
-            qpoint_semantic_heads = qpoint_semantic.float().view(
-                B, stop - start, self.num_points, self.num_heads, -1)
-            qpoint_heads = torch.where(
-                head_is_geometry, qpoint_geometry_heads,
-                qpoint_semantic_heads)
-            qpoint = qpoint_heads.reshape(
-                B, stop - start, self.num_points, C).to(query_feat.dtype)
-            if attention_query is not None:
-                attention_query[:, start:stop] = qpoint.detach()
-            qk = qpoint_heads
-            # Reuse the normalized historical point features for both key and
-            # value projections.  The previous implementation evaluated
-            # memory_norm(hf) twice and evaluated memory_point_pos(hp) a
-            # second time while building ``vv``.  Those duplicate activation
-            # graphs are numerically identical but can exceed a 24GB card at
-            # the first training iteration.  Reusing them preserves the
-            # point-level data flow and gradients while removing the copies.
-            normalized_hf = self.memory_norm(hf)
-            point_key = self.point_key_proj(normalized_hf)
-            point_pos = self.memory_point_pos(hp.float()).to(hf.dtype)
-            semantic_key = self.semantic_memory_proj(
-                hsx.to(self.semantic_memory_proj.weight.dtype)).to(hf.dtype)
-            hk_geometry = (hk_query + point_key + point_pos).float().view(
-                B, stop-start, L, self.num_heads, -1)
-            hk_semantic = (hk_query + point_key + point_pos + semantic_key).float().view(
-                B, stop-start, L, self.num_heads, -1)
-            hk = torch.where(head_is_geometry, hk_geometry, hk_semantic)
-            point_value = self.point_value_proj(normalized_hf)
-            vv = (hv_query + point_value + point_pos).float().view(
-                B, stop-start, L, self.num_heads, -1)
-            score = torch.einsum('bqrhd,bqlhd->bqrhl', qk, hk) / math.sqrt(self.head_dim)
-            pd = torch.sqrt(((query_points_metric[:, start:stop, :, None] - hp[:, :, None]) ** 2).sum(-1).clamp_min(0.))
-            compat = torch.einsum(
-                'bqrc,bqlc->bqrl',
-                retrieval_semantic[:, start:stop], hsx).clamp_min(_EPS)
-            semantic_score_term = retrieval_semantic_weight[:, start:stop].unsqueeze(-1).unsqueeze(-1) * torch.log(compat).unsqueeze(-2)
-            score = score - pd.square().unsqueeze(-2) / (self.point_radius ** 2 + _EPS) - ha[:, :, None, None, :] / (self.max_effective_age + _EPS) + torch.log(hr.clamp_min(_EPS))[:, :, None, None, :] + torch.where(head_is_geometry, torch.zeros_like(semantic_score_term), semantic_score_term)
-            eligible_mask = (
-                hvld[:, :, None, :] & (pd <= self.point_radius))
-            geometry_eligible_mask = (
-                geometry_hvld[:, :, None, :] & (pd <= self.point_radius))
-            pmask = torch.where(
-                head_is_geometry,
-                geometry_eligible_mask.unsqueeze(-2),
-                eligible_mask.unsqueeze(-2)).expand(
-                    -1, -1, -1, self.num_heads, -1)
-            pk = min(self.point_topk, L)
-            ts, ti = torch.topk(score.masked_fill(~pmask, torch.finfo(score.dtype).min), pk, -1)
-            tv = torch.gather(pmask, -1, ti)
-            w = self.dropout(safe_masked_softmax(ts, tv, -1))
-            gather = ti.transpose(-1, -2)[..., None].expand(B, stop-start, self.num_points, pk, self.num_heads, self.head_dim)
-            sv = torch.gather(vv[:, :, None].expand(B, stop-start, self.num_points, L, self.num_heads, self.head_dim), 3, gather).transpose(3, 4)
-            # Collapse valid heads only after the per-head weighted read.
-            context_heads = (w[..., None] * sv).sum(-2)
-            head_valid = tv.any(-1)
-            head_den = head_valid.float().sum(-1).clamp_min(1.)
-            context_heads = self.concatenate_attention_heads(
-                context_heads, head_valid)
-            context[:, start:stop] = context_heads.reshape(B, stop-start, self.num_points, C).to(context.dtype)
-            eligible_counts[:, start:stop] = eligible_mask.sum(-1)
-            selected_counts[:, start:stop] = tv.sum(-1).amax(-1)
-            has[:, start:stop] = selected_counts[:, start:stop] > 0
-            sr = torch.gather(hr[:, :, None, None, :].expand(B, stop-start, self.num_points, self.num_heads, L), -1, ti)
-            sa = torch.gather(ha[:, :, None, None, :].expand(B, stop-start, self.num_points, self.num_heads, L), -1, ti)
-            sd = torch.gather(pd.unsqueeze(-2).expand(B, stop-start, self.num_points, self.num_heads, L), -1, ti)
-            vw = w * tv.to(w.dtype); mass = vw.sum(-1).clamp_min(_EPS)
-            srel[:, start:stop], sage[:, start:stop], sdist[:, start:stop] = self.aggregate_support_statistics(
-                w, tv, sr, sa, sd)
-            ss = torch.gather(hsx[:, :, None, None].expand(B, stop-start, self.num_points, self.num_heads, L, self.num_classes), 4, ti[..., None].expand(B, stop-start, self.num_points, self.num_heads, pk, self.num_classes))
-            mean_s = (vw[..., None] * ss).sum(-2) / mass[..., None]
-            mean_s = (
-                mean_s *
-                head_valid[..., None].to(mean_s.dtype)).sum(-2) / (
-                    head_den[..., None])
-            point_memory_semantic[:, start:stop] = torch.where(
-                has[:, start:stop].unsqueeze(-1), mean_s,
-                torch.zeros_like(mean_s)).to(point_memory_semantic.dtype)
-            geometry_point_weight_mass[:, start:stop] = w[..., :self.num_geometry_heads, :].mul(
-                tv[..., :self.num_geometry_heads, :].to(w.dtype)).sum(-1)
-            if self.num_geometry_heads < self.num_heads:
-                semantic_point_weight_mass[:, start:stop] = w[..., self.num_geometry_heads:, :].mul(
-                    tv[..., self.num_geometry_heads:, :].to(w.dtype)).sum(-1)
+        if self.memory_read_mode == 'query':
+            # One read per current Query over the SAME deduplicated candidate
+            # union. Reuse the coarse route mixture, including empty-route
+            # fallback. Never expand historical points or run point attention.
+            # Broadcast every historical input before the point-wise MLP;
+            # current position/semantics and their disagreement stay per-point.
+            def broadcast(value):
+                return value.unsqueeze(2).expand(
+                    -1, -1, self.num_points, *value.shape[2:])
+
+            def weighted(value):
+                selected = value[batch_index, safe_coarse_idx]
+                weights = coarse_weights
+                if selected.dim() == weights.dim() + 1:
+                    weights = weights.unsqueeze(-1)
+                return (weights.to(selected.dtype) * selected).sum(
+                    -2 if selected.dim() == 4 else -1)
+
+            context = broadcast(coarse_context)
+            has = broadcast(coarse_valid.any(-1))
+            eligible_counts = broadcast(coarse_valid.sum(-1))
+            selected_counts = broadcast(coarse_valid.sum(-1))
+            point_memory_semantic = broadcast(weighted(flat['semantic']))
+            srel = broadcast(weighted(flat['rel'])).to(query_feat.dtype)
+            sage = broadcast(weighted(effective_age)).to(query_feat.dtype)
+            selected_dist = torch.gather(coarse_dist, -1, safe_coarse_idx)
+            sdist = broadcast((coarse_weights * selected_dist).sum(-1)).to(query_feat.dtype)
+            # No point attention was executed; no hidden point read diagnostics
+            # are available to the downstream fusion. Shape-compatible zeros.
+            attention_query = (torch.zeros_like(context) if return_diagnostics else None)
+        else:
+            # [B,Q,R,C]. Current qpoint conditions point attention, but is not
+            # itself added to the returned historical Point Memory Context.
+            semantic_query = self.semantic_query_proj(
+                retrieval_semantic.to(self.semantic_query_proj.weight.dtype)).to(
+                    query_feat.dtype)
+            head_is_geometry = torch.arange(
+                self.num_heads, device=query_feat.device) < self.num_geometry_heads
+            head_is_geometry = head_is_geometry.view(1, 1, 1, self.num_heads, 1)
+            # Build the Point-Attention query per chunk instead of materialising
+            # geometry and semantic versions for every active Query at once.  The
+            # returned attention_query is an audit snapshot and is intentionally
+            # detached; gradients still flow through each chunk's qpoint into the
+            # point-query projection while the context is computed.
+            attention_query = (query_feat.new_empty(
+                B, Q, self.num_points, C) if return_diagnostics else None)
+            for start in range(0, Q, self.query_chunk_size):
+                stop = min(Q, start + self.query_chunk_size)
+                idx = coarse_idx[:, start:stop].clamp_min(0); cv = coarse_valid[:, start:stop]
+                bi = torch.arange(B, device=query_feat.device)[:, None, None]
+                mf = flat['feat'][bi, idx]; ms = flat['semantic'][bi, idx]; mp = flat['points'][bi, idx]
+                mk = coarse_k[bi, idx]; mv = coarse_v[bi, idx]
+                mr = flat['rel'][bi, idx]; ma = effective_age[bi, idx]
+                rm = mp.shape[-2]; L = Ku * rm; max_L = max(max_L, L)
+                hf = mf.unsqueeze(-2).expand(-1, -1, -1, rm, -1).reshape(B, stop-start, L, C)
+                hk_query = mk.unsqueeze(-2).expand(-1, -1, -1, rm, -1).reshape(B, stop-start, L, C)
+                hv_query = mv.unsqueeze(-2).expand(-1, -1, -1, rm, -1).reshape(B, stop-start, L, C)
+                hsx = ms.unsqueeze(-2).expand(-1, -1, -1, rm, -1).reshape(B, stop-start, L, self.num_classes)
+                hp = mp.reshape(B, stop-start, L, 3)
+                hr = mr.unsqueeze(-1).expand(-1, -1, -1, rm).reshape(B, stop-start, L)
+                ha = ma.unsqueeze(-1).expand(-1, -1, -1, rm).reshape(B, stop-start, L)
+                hvld = flat['valid'][bi, idx] & (ma > 0) & (ma <= self.max_effective_age)
+                hvld = hvld.unsqueeze(-1).expand(-1, -1, -1, rm).reshape(B, stop-start, L)
+                coarse_point_valid = cv.unsqueeze(-1).expand(-1, -1, -1, rm).reshape(B, stop-start, L)
+                hvld = hvld & coarse_point_valid
+                chunk_geometry_union_valid = geometry_union_valid[:, start:stop]
+                geometry_point_valid = chunk_geometry_union_valid.unsqueeze(-1).expand(
+                    -1, -1, -1, rm).reshape(B, stop-start, L)
+                geometry_hvld = hvld & geometry_point_valid
+                qpos_chunk = qpos[:, start:stop]
+                qpoint_geometry = (
+                    qbase[:, start:stop] + qpos_chunk +
+                    h[:, start:stop] +
+                    geometry_coarse_context[:, start:stop].unsqueeze(2))
+                qpoint_semantic = (
+                    qbase[:, start:stop] + qpos_chunk +
+                    h[:, start:stop] + coarse_context[:, start:stop].unsqueeze(2) +
+                    semantic_query[:, start:stop])
+                qpoint_geometry_heads = qpoint_geometry.float().view(
+                    B, stop - start, self.num_points, self.num_heads, -1)
+                qpoint_semantic_heads = qpoint_semantic.float().view(
+                    B, stop - start, self.num_points, self.num_heads, -1)
+                qpoint_heads = torch.where(
+                    head_is_geometry, qpoint_geometry_heads,
+                    qpoint_semantic_heads)
+                qpoint = qpoint_heads.reshape(
+                    B, stop - start, self.num_points, C).to(query_feat.dtype)
+                if attention_query is not None:
+                    attention_query[:, start:stop] = qpoint.detach()
+                qk = qpoint_heads
+                # Reuse the normalized historical point features for both key and
+                # value projections.  The previous implementation evaluated
+                # memory_norm(hf) twice and evaluated memory_point_pos(hp) a
+                # second time while building ``vv``.  Those duplicate activation
+                # graphs are numerically identical but can exceed a 24GB card at
+                # the first training iteration.  Reusing them preserves the
+                # point-level data flow and gradients while removing the copies.
+                normalized_hf = self.memory_norm(hf)
+                point_key = self.point_key_proj(normalized_hf)
+                point_pos = self.memory_point_pos(hp.float()).to(hf.dtype)
+                semantic_key = self.semantic_memory_proj(
+                    hsx.to(self.semantic_memory_proj.weight.dtype)).to(hf.dtype)
+                hk_geometry = (hk_query + point_key + point_pos).float().view(
+                    B, stop-start, L, self.num_heads, -1)
+                hk_semantic = (hk_query + point_key + point_pos + semantic_key).float().view(
+                    B, stop-start, L, self.num_heads, -1)
+                hk = torch.where(head_is_geometry, hk_geometry, hk_semantic)
+                point_value = self.point_value_proj(normalized_hf)
+                vv = (hv_query + point_value + point_pos).float().view(
+                    B, stop-start, L, self.num_heads, -1)
+                score = torch.einsum('bqrhd,bqlhd->bqrhl', qk, hk) / math.sqrt(self.head_dim)
+                pd = torch.sqrt(((query_points_metric[:, start:stop, :, None] - hp[:, :, None]) ** 2).sum(-1).clamp_min(0.))
+                compat = torch.einsum(
+                    'bqrc,bqlc->bqrl',
+                    retrieval_semantic[:, start:stop], hsx).clamp_min(_EPS)
+                semantic_score_term = retrieval_semantic_weight[:, start:stop].unsqueeze(-1).unsqueeze(-1) * torch.log(compat).unsqueeze(-2)
+                score = score - pd.square().unsqueeze(-2) / (self.point_radius ** 2 + _EPS) - ha[:, :, None, None, :] / (self.max_effective_age + _EPS) + torch.log(hr.clamp_min(_EPS))[:, :, None, None, :] + torch.where(head_is_geometry, torch.zeros_like(semantic_score_term), semantic_score_term)
+                eligible_mask = (
+                    hvld[:, :, None, :] & (pd <= self.point_radius))
+                geometry_eligible_mask = (
+                    geometry_hvld[:, :, None, :] & (pd <= self.point_radius))
+                pmask = torch.where(
+                    head_is_geometry,
+                    geometry_eligible_mask.unsqueeze(-2),
+                    eligible_mask.unsqueeze(-2)).expand(
+                        -1, -1, -1, self.num_heads, -1)
+                pk = min(self.point_topk, L)
+                ts, ti = torch.topk(score.masked_fill(~pmask, torch.finfo(score.dtype).min), pk, -1)
+                tv = torch.gather(pmask, -1, ti)
+                w = self.dropout(safe_masked_softmax(ts, tv, -1))
+                gather = ti.transpose(-1, -2)[..., None].expand(B, stop-start, self.num_points, pk, self.num_heads, self.head_dim)
+                sv = torch.gather(vv[:, :, None].expand(B, stop-start, self.num_points, L, self.num_heads, self.head_dim), 3, gather).transpose(3, 4)
+                # Collapse valid heads only after the per-head weighted read.
+                context_heads = (w[..., None] * sv).sum(-2)
+                head_valid = tv.any(-1)
+                head_den = head_valid.float().sum(-1).clamp_min(1.)
+                context_heads = self.concatenate_attention_heads(
+                    context_heads, head_valid)
+                context[:, start:stop] = context_heads.reshape(B, stop-start, self.num_points, C).to(context.dtype)
+                eligible_counts[:, start:stop] = eligible_mask.sum(-1)
+                selected_counts[:, start:stop] = tv.sum(-1).amax(-1)
+                has[:, start:stop] = selected_counts[:, start:stop] > 0
+                sr = torch.gather(hr[:, :, None, None, :].expand(B, stop-start, self.num_points, self.num_heads, L), -1, ti)
+                sa = torch.gather(ha[:, :, None, None, :].expand(B, stop-start, self.num_points, self.num_heads, L), -1, ti)
+                sd = torch.gather(pd.unsqueeze(-2).expand(B, stop-start, self.num_points, self.num_heads, L), -1, ti)
+                vw = w * tv.to(w.dtype); mass = vw.sum(-1).clamp_min(_EPS)
+                srel[:, start:stop], sage[:, start:stop], sdist[:, start:stop] = self.aggregate_support_statistics(
+                    w, tv, sr, sa, sd)
+                ss = torch.gather(hsx[:, :, None, None].expand(B, stop-start, self.num_points, self.num_heads, L, self.num_classes), 4, ti[..., None].expand(B, stop-start, self.num_points, self.num_heads, pk, self.num_classes))
+                mean_s = (vw[..., None] * ss).sum(-2) / mass[..., None]
+                mean_s = (
+                    mean_s *
+                    head_valid[..., None].to(mean_s.dtype)).sum(-2) / (
+                        head_den[..., None])
+                point_memory_semantic[:, start:stop] = torch.where(
+                    has[:, start:stop].unsqueeze(-1), mean_s,
+                    torch.zeros_like(mean_s)).to(point_memory_semantic.dtype)
+                geometry_point_weight_mass[:, start:stop] = w[..., :self.num_geometry_heads, :].mul(
+                    tv[..., :self.num_geometry_heads, :].to(w.dtype)).sum(-1)
+                if self.num_geometry_heads < self.num_heads:
+                    semantic_point_weight_mass[:, start:stop] = w[..., self.num_geometry_heads:, :].mul(
+                        tv[..., self.num_geometry_heads:, :].to(w.dtype)).sum(-1)
         # Only selected historical point values reach Point Memory Context.
         # Current qpoint and pooling over all Memory queries are excluded.
         context = self.out_proj(context.to(self.out_proj.weight.dtype)).to(query_feat.dtype) * has.unsqueeze(-1).to(query_feat.dtype)
@@ -2351,8 +2645,10 @@ class FutureMemoryAdapterV2(nn.Module):
         # effective age, distance, normalized entropy, margin, semantic weight,
         # cosine similarity, and JS divergence.
         scalar_features = torch.stack([
-            eligible_counts.float() / float(max(Ku * Rm, 1)),
-            selected_counts.float() / float(max(self.point_topk, 1)),
+            eligible_counts.float() / float(max(
+                Ku if self.memory_read_mode == 'query' else Ku * Rm, 1)),
+            selected_counts.float() / float(max(
+                Ku if self.memory_read_mode == 'query' else self.point_topk, 1)),
             srel,
             (sage / (self.max_effective_age + _EPS)).clamp(0, 1),
             (sdist / (self.point_radius + _EPS)).clamp(0, 1),
@@ -2378,15 +2674,22 @@ class FutureMemoryAdapterV2(nn.Module):
         gate_pos = torch.zeros_like(gate_occ)
         for start in range(0, Q, self.query_chunk_size):
             stop = min(Q, start + self.query_chunk_size)
-            adapter_input = torch.cat([
-                qexpanded[:, start:stop], qpos[:, start:stop],
-                context[:, start:stop],
-                qexpanded[:, start:stop] - context[:, start:stop],
-                h[:, start:stop],
-                point_semantic[:, start:stop].to(query_feat.dtype),
-                point_memory_semantic[:, start:stop].to(query_feat.dtype),
-                semantic_difference[:, start:stop].to(query_feat.dtype),
-                scalar_features[:, start:stop]], -1)
+            if self.ablation_mode == 'full_retrieval_concat':
+                adapter_input = torch.cat([
+                    qexpanded[:, start:stop], qpos[:, start:stop],
+                    context[:, start:stop], h[:, start:stop],
+                    point_semantic[:, start:stop].to(query_feat.dtype),
+                    point_memory_semantic[:, start:stop].to(query_feat.dtype)], -1)
+            else:
+                adapter_input = torch.cat([
+                    qexpanded[:, start:stop], qpos[:, start:stop],
+                    context[:, start:stop],
+                    qexpanded[:, start:stop] - context[:, start:stop],
+                    h[:, start:stop],
+                    point_semantic[:, start:stop].to(query_feat.dtype),
+                    point_memory_semantic[:, start:stop].to(query_feat.dtype),
+                    semantic_difference[:, start:stop].to(query_feat.dtype),
+                    scalar_features[:, start:stop]], -1)
             if adapter_input.shape[-1] != self.adapter_input_dims:
                 raise RuntimeError(
                     'FutureMemoryAdapterV2 adapter input has '
@@ -2396,7 +2699,10 @@ class FutureMemoryAdapterV2(nn.Module):
             delta_s[:, start:stop] = self.delta_s_head(adapted)
             delta_o[:, start:stop] = self.delta_o_head(adapted)
             delta_p[:, start:stop] = self.delta_p_head(adapted)
-            gs, go, gp = self.task_gates(adapted, horizon_id)
+            if self.ablation_mode == 'full_retrieval_concat':
+                gs = go = gp = torch.ones_like(adapted[..., :1])
+            else:
+                gs, go, gp = self.task_gates(adapted, horizon_id)
             gate[:, start:stop] = gs
             gate_occ[:, start:stop] = go
             gate_pos[:, start:stop] = gp
@@ -2413,6 +2719,12 @@ class FutureMemoryAdapterV2(nn.Module):
                         gate_occ=gate_occ, gate_pos=gate_pos)
 
         diagnostics = dict(has_candidate=has,
+                           memory_read_mode=self.memory_read_mode,
+                           point_read_executed=self.memory_read_mode == 'point',
+                           history_slot_limit=self.history_slot_limit,
+                           readable_memory_queries=(flat['valid'] & (flat['rel'] > 0) &
+                               (effective_age > 0) &
+                               (effective_age <= self.max_effective_age)).sum(-1).detach(),
                            eligible_point_count=eligible_counts.detach(),
                            selected_point_count=selected_counts.detach(),
                            coarse_candidate_count=coarse_valid.sum(-1),

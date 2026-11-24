@@ -1,0 +1,7 @@
+{
+  "status": "PASS",
+  "epoch": 4,
+  "samples": 4219,
+  "checkpoint_sha256": "69ae1d6caceb2dca3d19a704a9ec4659acb3b996ce14adaf8d4cf9274821940d",
+  "trajectories_sha256": "e9f8f0c0b7e6f0f652fd1a53255776ea05cf2dbb4a39fceefc0a0f8d587b0258"
+}

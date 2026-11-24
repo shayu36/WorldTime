@@ -1,0 +1,20 @@
+{
+  "checkpoint": "work_dirs/memory-planning-fusion-from-t1-e3/epoch_1.pth",
+  "epoch": 1,
+  "iteration": 9865,
+  "frozen_source_keys": 766,
+  "frozen_source_keys_changed": [],
+  "fusion_parameters": 224002,
+  "fusion_all_finite": true,
+  "trained_residual_head_norms": {
+    "memory_planning_fusion.residual_head.2.weight": 0.01786753162741661,
+    "memory_planning_fusion.residual_head.2.bias": 0.000859269464854151
+  },
+  "logged_iterations": 986,
+  "all_logged_losses_finite": true,
+  "all_logged_grad_norms_finite": true,
+  "mean_logged_loss": 0.18600736308316457,
+  "last_100_log_windows_mean_loss": 0.18489689999999995,
+  "recent_seconds_per_iteration": 0.8766774000000003,
+  "evaluation_metrics_present": false
+}

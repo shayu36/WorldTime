@@ -1,0 +1,43 @@
+{
+  "started_utc": "2026-11-16T09:09:59.227837+00:00",
+  "command": [
+    "/data/jxy/projects/env/bin/python",
+    "-u",
+    "tools/run_memory_planning_continue.py",
+    "--work-dir",
+    "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3",
+    "--job-dir",
+    "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/continue_3epochs",
+    "--config",
+    "configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-planning-fusion.py",
+    "--resume",
+    "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/epoch_1.pth",
+    "--additional-epochs",
+    "3"
+  ],
+  "tmux_session": "memory-planning-3ep",
+  "epoch_sequence": [
+    2,
+    3,
+    4
+  ],
+  "evaluation_sequence": [
+    2,
+    3,
+    4,
+    1
+  ],
+  "epochs_added": 3,
+  "metrics": [
+    "IoU",
+    "mIoU",
+    "L2_prefix",
+    "L2_endpoint",
+    "Obj_Collision",
+    "Box_Collision"
+  ],
+  "device_count": 2,
+  "batch_per_gpu": 1,
+  "checkpoint_retention": "all epochs retained",
+  "model_source_unchanged_from_epoch1": true
+}

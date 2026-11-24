@@ -1,0 +1,81 @@
+{
+  "samples": 4219,
+  "filter_total": 4819,
+  "prediction": "/data/jxy/projects/work_dirs/memory-planning-fusion-from-t1-e3/eval_epoch_1_all/trajectories.pkl",
+  "prediction_sha256": "eaf7136ac94e20edcc927917f9e7c1f72d33bbe647d8dac90c407e8ae13c2aea",
+  "metric_source_sha256": "c8ec9308b2883d8d689391d44db28f7ff747a5d133b1bf6f0d7415cf733d3563",
+  "metric_entry_sha256": "408c3b9e6fdf4ae0830c3ac5a99290ede6fa25650147733face36183e38b8374",
+  "gt_sha256": {
+    "stp3_traj_gt.pkl": "e97c44269025535f458fb1ddb2b53c375ae8e76f1169ec0df141a2a203c612ee",
+    "stp3_occupancy.pkl": "eacc3f314e7c5040c32092ffdd03043f95c3ce8dadff5ee16847f555865f45f8",
+    "filter_token.pkl": "05de82addec070dde998485ade21dc166ea4edc79f13dc737c476da6b11c6a66"
+  },
+  "per_step": {
+    "obj_col": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "obj_box_col": [
+      0.0009480919688940048,
+      0.0009480919688940048,
+      0.0007110689766705036,
+      0.0014221379533410072,
+      0.0014221379533410072,
+      0.001185114961117506
+    ],
+    "L2": [
+      0.1290697604417801,
+      0.19030307233333588,
+      0.20271112024784088,
+      0.2568493187427521,
+      0.30278822779655457,
+      0.35625478625297546
+    ]
+  },
+  "prefix": {
+    "1s": {
+      "obj_col": 0.0,
+      "obj_box_col": 0.0009480919688940048,
+      "L2": 0.15968641638755798,
+      "box_collision_percent": 0.09480919688940048
+    },
+    "2s": {
+      "obj_col": 0.0,
+      "obj_box_col": 0.0010073477169498801,
+      "L2": 0.19473332166671753,
+      "box_collision_percent": 0.10073477169498801
+    },
+    "3s": {
+      "obj_col": 0.0,
+      "obj_box_col": 0.0011061072582378983,
+      "L2": 0.23966270685195923,
+      "box_collision_percent": 0.11061072582378983
+    },
+    "mean_L2": 0.1980274816354116
+  },
+  "endpoint": {
+    "1s": {
+      "obj_col": 0.0,
+      "obj_box_col": 0.0009480919688940048,
+      "L2": 0.19030307233333588,
+      "box_collision_percent": 0.09480919688940048
+    },
+    "2s": {
+      "obj_col": 0.0,
+      "obj_box_col": 0.0014221379533410072,
+      "L2": 0.2568493187427521,
+      "box_collision_percent": 0.14221379533410072
+    },
+    "3s": {
+      "obj_col": 0.0,
+      "obj_box_col": 0.001185114961117506,
+      "L2": 0.35625478625297546,
+      "box_collision_percent": 0.1185114961117506
+    },
+    "mean_L2": 0.2678023924430211
+  }
+}
