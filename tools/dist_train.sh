@@ -5,7 +5,7 @@ MASTER_PORT=29500
 
 export NCCL_DEBUG=INFO
 export NCCL_ASYNC_ERROR_HANDLING=1
-# 先别禁 P2P
+# Keep peer-to-peer communication enabled.
 # export NCCL_P2P_DISABLE=1
 
 PYTHONPATH="$(dirname $0)/..":$PYTHONPATH \

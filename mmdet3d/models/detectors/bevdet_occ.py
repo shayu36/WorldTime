@@ -15,18 +15,18 @@ import matplotlib
 colors_map = np.array(
     [
         [0,   0,   0],  # 0 undefined
-        [255, 158, 0],  # 1 barrier         障碍物  浅橘色
+        [255, 158, 0],  # 1 barrier
         [0, 0, 230],    # 2 bicycle  Blue
-        [200, 0, 0],   # 3 bus             公交车  深绿色
-        [220, 20, 60],  # 4 car             小汽车  深红色
-        [200, 200, 200],   # 5 construction_vehicle  工程车  
-        [255, 140, 0],  # 6 motorcycle      摩托车  深橘色
-        [233, 150, 70], # 7 pedestrian      行人    
-        [255, 61, 99],  # 8 traffic_cone    锥桶    Red
-        [112, 128, 144],# 9 trailer         拖车    Slategrey
-        [222, 184, 135],# 10 truck          卡车    茶棕色
+        [200, 0, 0],   # 3 bus
+        [220, 20, 60],  # 4 car
+        [200, 200, 200],   # 5 construction_vehicle
+        [255, 140, 0],  # 6 motorcycle
+        [233, 150, 70], # 7 pedestrian
+        [255, 61, 99],  # 8 traffic_cone
+        [112, 128, 144],# 9 trailer
+        [222, 184, 135],# 10 truck
         [100, 100, 100],    # 11 driveable_surface 
-        [165, 42, 42],  # 12 other_flat     其他    深棕色
+        [165, 42, 42],  # 12 other_flat
         [50, 50, 50],  # 13 sidewalk   
         [75, 0, 75], # 14 terrain
         [255, 0, 0], # 15 manmade
@@ -98,12 +98,12 @@ class BEVStereo4DOCC(BEVStereo4D):
         sensor2egos = sensor2egos.view(B, self.num_frame, N, 4, 4)
         ego2globals = ego2globals.view(B, self.num_frame, N, 4, 4)
 
-        # calculate the transformation from sweep sensor to key ego   # 取的是第一帧、第一个相机时间戳下的pose作为key
+        # Transform sweep sensor poses to the key ego pose at the first frame and camera timestamp.
         keyego2global = ego2globals[:, 0, 0, ...].unsqueeze(1).unsqueeze(1)
         global2keyego = torch.inverse(keyego2global.double().cpu()).cuda()
         sensor2keyegos = \
             global2keyego @ ego2globals.double() @ sensor2egos.double()
-        sensor2keyegos = sensor2keyegos.float()     # B, T, N, 4, 4     #这里得到了所有时序、相机帧 keyego的pose！
+        sensor2keyegos = sensor2keyegos.float()     # B, T, N, 4, 4; sensor poses in the key ego frame.
 
         curr2adjsensor = None
         if stereo:
@@ -129,8 +129,8 @@ class BEVStereo4DOCC(BEVStereo4D):
             sensor2keyegos,     # camera2keyego 
             ego2globals,
             intrins.view(B, self.num_frame, N, 3, 3),
-            post_rots.view(B, self.num_frame, N, 3, 3),     # ida_aug，不同相机aug不同，同一相机不同时间戳共享aug参数
-            post_trans.view(B, self.num_frame, N, 3)        # ida_aug，不同相机aug不同，同一相机不同时间戳共享aug参数
+            post_rots.view(B, self.num_frame, N, 3, 3),     # Image augmentation differs across cameras but is shared over time per camera.
+            post_trans.view(B, self.num_frame, N, 3)        # Image augmentation differs across cameras but is shared over time per camera.
         ]
         extra = [torch.split(t, 1, 1) for t in extra]
         extra = [[p.squeeze(1) for p in t] for t in extra]

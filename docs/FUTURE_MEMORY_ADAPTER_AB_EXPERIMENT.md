@@ -1,63 +1,63 @@
-# A+B 任务与时刻门控续训
+# A+B task- and horizon-gated continuation training
 
-起点：occupancy 修正版 `occfix-q48/epoch_11.pth`，对应 Future IoU
-22.7967、Future mIoU 13.1100。实现前 HEAD 为
-`852977be7f9a734b2d32cef781093c42831350a3`，原工作区干净。
+Starting point: occupancy-corrected `occfix-q48/epoch_11.pth`, corresponding to Future IoU
+22.7967 and Future mIoU 13.1100. HEAD before implementation was
+`852977be7f9a734b2d32cef781093c42831350a3`; the original workspace was clean.
 
-## 唯一结构变更
+## The only structural change
 
-A：原 `gate_head` 保留为语义头，复制其训练后的 weight/bias 为
-`gate_occ_head` 和 `gate_pos_head`。B：新增零初始化
-`task_horizon_bias[3,3]`（行=1/2/3s，列=sem/occ/pos）。
-每个 Gate 为 `sigmoid(head_task(F) + bias[horizon, task])`，输出
-`[B,Q,R,1]`。C 未启用，也未新增类别组门控。
+A: Retain the original `gate_head` as the semantic head and copy its trained weight/bias into
+`gate_occ_head` and `gate_pos_head`. B: Add zero-initialized
+`task_horizon_bias[3,3]` (rows=1/2/3s, columns=sem/occ/pos).
+Each Gate is `sigmoid(head_task(F) + bias[horizon, task])`, with output
+`[B,Q,R,1]`. C is not enabled, and no class-group gating is added.
 
-语义、占据、位置分别应用自己的 Gate；decode 仍保留类别排序，最大
-logit 等于 occupancy。位置更新沿用米制相对编码残差。
-无候选时三门控归零；Baseline 冻结、0s/非目标步不变、修正不反馈递推。
-默认 `gate_mode=shared`，旧 V1/V2 配置和参数键兼容。
+Semantics, occupancy, and position each apply their own Gate; decode still preserves class ranking, with the maximum
+logit equal to occupancy. Position updates retain metric relative-encoding residuals.
+All three gates become zero when there are no candidates; Baseline is frozen, 0s/non-target steps are unchanged, and corrections do not feed back into recurrence.
+The default is `gate_mode=shared`, compatible with old V1/V2 configurations and parameter keys.
 
-迁移不清零已训练的残差头、不重置原 Gate bias。初始输出应等于训练后
-的源 checkpoint，而非等于冻结 Baseline。迁移工具生成新文件，拒绝覆盖，
-保留全部原 state_dict 张量，记录源 SHA256，丢弃旧 optimizer/epoch 状态。
-完整模型严格加载和真实 Adapter 权重的 B=2 三时刻合成前向验证用于启动检查；
-这不是全 validation 等价性评估。
+Migration does not zero the trained residual heads or reset the original Gate bias. Initial output should equal the trained
+source checkpoint, rather than the frozen Baseline. The migration tool generates a new file, refuses overwriting,
+preserves all original state_dict tensors, records the source SHA256, and discards old optimizer/epoch state.
+Strict loading of the full model and a synthetic B=2 forward pass at three horizons with actual Adapter weights serve as startup checks;
+this is not an equivalence assessment over full validation.
 
-## 本轮运行设置
+## Run settings for this round
 
-独立配置 `sparseworld-traj-memory-future-adapter-v2-ab.py`，独立目录
-`work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-from-occfix11`。
-仅启动 A+B 一条训练，后续根据结果决定 C，不自动启动 C。
+Separate configuration `sparseworld-traj-memory-future-adapter-v2-ab.py`, separate directory
+`work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-from-occfix11`.
+Launch only one A+B training run; decide on C later based on results, without launching C automatically.
 
-- 双 RTX3090，batch/card=1，worker/card=1，chunk=48。
-- activation checkpoint=True，save_on_cpu=False，dynamic FP16，seed=17。
-- AdamW 新优化器，学习率 2e-5，weight decay 沿用0.01。
-- 100 iter 线性 warmup（0.5→1倍），随后固定学习率。
-- 选择2e-5是低于源epoch11约3.09e-5的保守短程适配值，未经调参优化。
-- 运行3个本地epoch，保存epoch_1/2/3，对应源epoch11之后的三个续训阶段。
-  不是原始runner的epoch12/13/14精确resume，数据采样计数也从本地epoch0开始。
-- 原 occupancy标签、正负平衡、anchor和其余损失/检索参数继承修正版。
+- Two RTX3090 cards, batch/card=1, worker/card=1, chunk=48.
+- activation checkpoint=True, save_on_cpu=False, dynamic FP16, seed=17.
+- New AdamW optimizer, learning rate 2e-5, weight decay retained at 0.01.
+- 100 iter linear warmup (0.5→1 times), then a fixed learning rate.
+- 2e-5 is a conservative short-adaptation value below the source epoch11 rate of approximately 3.09e-5; it has not been optimized by tuning.
+- Run 3 local epochs, saving epoch_1/2/3, corresponding to three continuation stages after source epoch11.
+  This is not an exact resume to the original runner's epoch12/13/14; data-sampling counts also restart from local epoch0.
+- Original occupancy labels, positive/negative balancing, anchor, and remaining loss/retrieval parameters are inherited from the corrected version.
 
-训练日志追加各horizon有效候选比例、三Gate在有效候选上的mean/std、
-语义和占据修正绝对均值、位置米制修正范数均值及有符号occupancy shift。
-这些detach统计不参与总loss。activation checkpoint返回全部门控；DDP
-图锚点覆盖三门控，空Memory分支保留零梯度连接。
+Training logs add per-horizon valid-candidate proportions, mean/std of the three Gates over valid candidates,
+mean absolute semantic and occupancy corrections, mean metric position-correction norms, and signed occupancy shifts.
+These detached statistics do not enter the total loss. Activation checkpointing returns all gates; DDP
+graph anchors cover all three gates, and the empty-Memory branch retains zero-gradient connections.
 
-## 验收与归因
+## Acceptance checks and attribution
 
-先比较迁移前后精确输出、独立分支/时刻控制、无候选回退、B=2、
-checkpoint重计算梯度和全空Memory参数连接，然后检查真实训练首批迭代。
-不覆盖旧checkpoint，不提交/推送。
+First compare exact outputs before/after migration, independent branch/horizon control, no-candidate fallback, B=2,
+checkpoint recomputation gradients, and all-empty-Memory parameter connections; then inspect the first actual training iterations.
+Do not overwrite old checkpoints or commit/push.
 
-训练后逐时刻报告IoU/mIoU及逐类结果，并检查占据precision/recall。
-目标是保持IoU收益并改善2s/3s语义，不预先声称成功。
-本轮仅运行A+B探索；同起点、同优化器重置、同学习率/采样/预算的共享Gate
-续训对照尚未运行。因此对源epoch11的提升包含额外训练的影响，不能单独
-归因于门控结构。未来开启C也应采用相同预算对照。
+After training, report IoU/mIoU and per-class results at each horizon, and inspect occupancy precision/recall.
+The aim is to retain IoU gains while improving 2s/3s semantics; success is not claimed in advance.
+This round runs only A+B exploration; a shared-Gate continuation control with the same starting point, optimizer reset,
+learning rate/sampling/budget has not been run. Improvements over source epoch11 therefore include the effect of additional training and cannot be
+attributed solely to the gating structure. Any future C run should also use a control with the same budget.
 
-## 正式评估结果与当前选择（2026-10-16）
+## Official evaluation results and current selection (2026-10-16)
 
-以下结果均来自4219帧完整validation；Future Mean只平均1s、2s、3s。
+All results below come from full validation on 4219 frames; Future Mean averages only 1s, 2s, and 3s.
 
 | checkpoint | IoU [0s,1s,2s,3s] | Future IoU | mIoU [0s,1s,2s,3s] | Future mIoU |
 | --- | --- | ---: | --- | ---: |
@@ -65,41 +65,41 @@ checkpoint重计算梯度和全空Memory参数连接，然后检查真实训练�
 | A+B epoch2 | [25.68, 23.80, 22.79, 21.64] | 22.7433 | [18.20, 15.05, 13.02, 11.25] | 13.1067 |
 | A+B epoch3 | [25.68, 23.84, 22.82, 21.64] | 22.7667 | [18.20, 15.08, 13.05, 11.26] | 13.1300 |
 
-A+B epoch1是本轮V2路线保留的最新最佳结果。相对历史Baseline Future IoU
-22.2133提高0.5767，但Future mIoU 13.1667仍低于Baseline 13.2233，差0.0566。
-因此这里的“最佳”指当前V2实验中以occupied IoU为主的综合选择，不代表17类
-语义mIoU已经超过Baseline，也不改变历史V1记录。
+A+B epoch1 is the latest best result retained for this round of the V2 approach. Relative to historical Baseline Future IoU
+22.2133, it improves by 0.5767, but Future mIoU 13.1667 remains below Baseline 13.2233 by 0.0566.
+"Best" therefore denotes the overall selection among current V2 experiments, primarily based on occupied IoU; it does not mean that 17-class
+semantic mIoU has surpassed Baseline and does not alter historical V1 records.
 
-原始结果保存在
-`work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-from-occfix11/eval_epoch_{1,2,3}/metrics.json`。
+Original results are saved at
+`work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-from-occfix11/eval_epoch_{1,2,3}/metrics.json`.
 
-## 已放弃的C方案：类别组Semantic Gate
+## Abandoned C scheme: class-group Semantic Gate
 
-C从A+B epoch1出发，保留语义/占据/位置三任务Gate与horizon bias，只把语义Gate
-进一步拆成三个预定义类别组：背景类、交通参与者、道路设施。新增零初始化的
-`Linear(256,3)`，为每个点预测三个组偏置，再按固定类别到组的映射展开成
-`[B,Q,R,17]` Semantic Gate；occupancy和position Gate仍为`[B,Q,R,1]`。
-迁移时零组偏置与A+B严格等价，随后所有V2参数共同续训。
+C starts from A+B epoch1, retaining the three task Gates for semantics/occupancy/position and the horizon bias, while further splitting only the semantic Gate
+into three predefined class groups: background classes, traffic participants, and road facilities. A zero-initialized
+`Linear(256,3)` predicts three group biases for each point, then expands them using a fixed class-to-group mapping into a
+`[B,Q,R,17]` Semantic Gate; occupancy and position Gates remain `[B,Q,R,1]`.
+At migration, zero group biases give strict equivalence with A+B; all V2 parameters subsequently continue training together.
 
-完整评估结果如下：
+Full-evaluation results:
 
-| checkpoint | Future IoU | Future mIoU | 相对A+B最佳IoU | 相对A+B最佳mIoU |
+| checkpoint | Future IoU | Future mIoU | Relative to best A+B IoU | Relative to best A+B mIoU |
 | --- | ---: | ---: | ---: | ---: |
 | C epoch1 | 22.7900 | 13.1667 | +0.0000 | +0.0000 |
 | C epoch2 | 22.7600 | 13.1133 | -0.0300 | -0.0534 |
 | C epoch3 | 22.7700 | 13.1400 | -0.0200 | -0.0267 |
 
-C被放弃并从生产代码中移除，原因是：
+C was abandoned and removed from production code because:
 
-1. 三轮没有超过A+B epoch1；继续训练没有形成上升趋势。
-2. C没有解决关键取舍：occupied IoU保持较高，但2s/3s语义mIoU仍低于Baseline。
-3. 固定粗类别组内部同时包含改善与退化类别。例如背景组同时包含道路类与
-   manmade/vegetation，单个组偏置无法表达组内相反需求。
-4. 类别组Semantic Gate只能调节已有点的语义残差，不能恢复被occupancy分支过滤
-   或被位置残差移出正确体素的点，和已观察到的主要错误机制不完全匹配。
-5. 它增加参数、checkpoint迁移和类别级Gate维护成本，却没有得到可测的指标收益。
+1. None of the three rounds exceeded A+B epoch1; continued training did not produce an upward trend.
+2. C did not resolve the key tradeoff: occupied IoU remained relatively high, but 2s/3s semantic mIoU remained below Baseline.
+3. Fixed coarse class groups contain both improving and declining classes. For example, the background group includes road classes alongside
+   manmade/vegetation, and one group bias cannot express opposing needs within the group.
+4. A class-group Semantic Gate can only adjust semantic residuals on existing points; it cannot restore points filtered out by the occupancy branch
+   or displaced from the correct voxel by position residuals, so it does not fully match the principal observed error mechanisms.
+5. It adds parameters, checkpoint migration, and class-level Gate maintenance costs without measurable metric gains.
 
-C的训练checkpoint与评估产物暂留在
-`work_dirs/sparseworld-traj-memory-future-adapter-v2-c-from-ab1-5ep`作为实验依据，
-但C配置、迁移工具、训练/评估脚本、专属测试和类别组模型路径均已撤销。
-后续开发以A+B为代码与checkpoint起点，不再从C继续训练。
+C's training checkpoints and evaluation artifacts are temporarily retained at
+`work_dirs/sparseworld-traj-memory-future-adapter-v2-c-from-ab1-5ep` as experimental evidence,
+but its configuration, migration tool, training/evaluation scripts, dedicated tests, and class-group model path have all been removed.
+Subsequent development starts from A+B code and checkpoints; training will no longer continue from C.

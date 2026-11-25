@@ -1,22 +1,24 @@
 # Project Documentation
 
-当前实验结论以 [EXPERIMENT_DEBUG_REPORT.md](EXPERIMENT_DEBUG_REPORT.md) 为唯一入口。旧 handoff、阶段性实验记录和 `logs/` 下的重复索引已清理；原始日志和 checkpoint 仍在 `work_dirs/`。
+Use [EXPERIMENT_DEBUG_REPORT.md](EXPERIMENT_DEBUG_REPORT.md) as the sole entry point for current experimental conclusions.
+Old handoffs, interim experiment records, and duplicate indexes under `logs/` have been removed;
+raw logs and checkpoints remain in `work_dirs/`.
 
-## 保留文档
+## Retained documents
 
-| 文档 | 主要内容 |
+| Document | Main contents |
 | --- | --- |
-| [EXPERIMENT_DEBUG_REPORT.md](EXPERIMENT_DEBUG_REPORT.md) | Memory-only、joint、Phase2、Phase3、Phase4、M0R1/M1R0/M1R1、Future Adapter smoke/formal 状态的统一实验汇总 |
-| [FUTURE_MEMORY_ADAPTER_MODELING.md](FUTURE_MEMORY_ADAPTER_MODELING.md) | Future Memory Adapter 建模说明：独立 output correction、1s/2s/3s 映射、active query 覆盖、candidate scoring、初始化和冻结策略 |
-| [STAC_QM_Implementation.md](STAC_QM_Implementation.md) | 当前可用 runbook：环境检查、配置入口、代码验收、smoke/formal/eval 命令、产物策略 |
-| [STAC_QM_Modeling_Repair.md](STAC_QM_Modeling_Repair.md) | STAC-QM 建模修复、schema-v2 cache 校验、训练安全边界和 Future Adapter 不变量 |
-| [SparseWorld_Code_Architecture.md](SparseWorld_Code_Architecture.md) | SparseWorld 代码架构参考 |
-| [getting_started.md](getting_started.md) | 环境与基础使用说明 |
-| [prepare_datasets.md](prepare_datasets.md) | 数据集准备说明 |
+| [EXPERIMENT_DEBUG_REPORT.md](EXPERIMENT_DEBUG_REPORT.md) | Unified summary of Memory-only, joint, Phase2, Phase3, Phase4, M0R1/M1R0/M1R1, and Future Adapter smoke/formal experiment status |
+| [FUTURE_MEMORY_ADAPTER_MODELING.md](FUTURE_MEMORY_ADAPTER_MODELING.md) | Future Memory Adapter modeling: independent output correction, 1s/2s/3s mapping, active-query coverage, candidate scoring, initialization, and freezing strategy |
+| [STAC_QM_Implementation.md](STAC_QM_Implementation.md) | Current runbook: environment checks, configuration entry points, code acceptance checks, smoke/formal/eval commands, and artifact policy |
+| [STAC_QM_Modeling_Repair.md](STAC_QM_Modeling_Repair.md) | STAC-QM modeling repairs, schema-v2 cache validation, training safeguards, and Future Adapter invariants |
+| [SparseWorld_Code_Architecture.md](SparseWorld_Code_Architecture.md) | SparseWorld code architecture reference |
+| [getting_started.md](getting_started.md) | Environment and basic usage |
+| [prepare_datasets.md](prepare_datasets.md) | Dataset preparation |
 
-## 维护规则
+## Maintenance rules
 
-- 新实验结果只写入 `EXPERIMENT_DEBUG_REPORT.md`。
-- 命令和 runbook 只写入 `STAC_QM_Implementation.md`。
-- 建模边界和验收原则只写入对应 modeling 文档。
-- 不在 `docs/` 中复制大型日志；大型产物保留在 `work_dirs/`。
+- Add new experimental results only to `EXPERIMENT_DEBUG_REPORT.md`.
+- Add commands and runbook procedures only to `STAC_QM_Implementation.md`.
+- Add modeling boundaries and acceptance principles only to the relevant modeling documents.
+- Do not copy large logs into `docs/`; retain large artifacts in `work_dirs/`.

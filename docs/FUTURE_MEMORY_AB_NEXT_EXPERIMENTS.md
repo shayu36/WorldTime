@@ -1,57 +1,57 @@
-# A+B 后续逐步实验：先诊断，再改损失
+# A+B follow-up experiments, step by step: diagnose first, then change the loss
 
-状态（2026-10-16）：这里只完成代码、配置和 CPU 静态/小规模测试。两张 3090 正运行另一条 `sparseworld-traj-prescf.py` 训练，本轮没有启动 A+B 诊断、完整 validation 或新训练。下述干预是固定 A+B epoch 1 checkpoint 的输出实验，不是重新训练的结果。
+Status (2026-10-16): Only code, configurations, and CPU static/small-scale tests have been completed here. The two 3090 cards are running another training job, `sparseworld-traj-prescf.py`; this round did not launch A+B diagnostics, full validation, or new training. The interventions below are output experiments with a fixed A+B epoch 1 checkpoint, not retraining results.
 
-## 已有依据与边界
+## Existing evidence and limitations
 
-A+B epoch 1 完整 validation：Future IoU 22.7900，Future mIoU 13.1667。此前 Baseline 约为 22.2133 / 13.2233。256 帧配对诊断显示恢复 Baseline 位置后 Future mIoU +0.1434（95% CI +0.0628 至 +0.2240）；恢复 Baseline occupancy 后二值 Future IoU -0.5006；恢复 Baseline semantic 后 Future mIoU -0.2894。这些是输出干预，不证明重新训练后的因果效果；完整记录见 `FUTURE_MEMORY_AB_PAIRED_GPU_DIAGNOSIS.md`。
+A+B epoch 1 full validation: Future IoU 22.7900, Future mIoU 13.1667. The earlier Baseline was approximately 22.2133 / 13.2233. Paired diagnosis on 256 frames showed that restoring Baseline position raised Future mIoU by +0.1434 (95% CI +0.0628 to +0.2240); restoring Baseline occupancy changed binary Future IoU by -0.5006; restoring Baseline semantics changed Future mIoU by -0.2894. These are output interventions and do not establish causal effects after retraining; see `FUTURE_MEMORY_AB_PAIRED_GPU_DIAGNOSIS.md` for the complete record.
 
-## 阶段 1：输出级诊断，不改权重
+## Stage 1: output-level diagnosis without changing weights
 
-固定同一 A+B epoch 1 checkpoint、同一前向。比较：原始 A+B、仅 1s/2s 恢复 Baseline 位置、以及仅 2s/3s 对 occupancy **负**残差进行软保护（保留原残差的 25%、50%、75%）。保护质量由 Baseline 和修正后语义分布在 motorcycle、pedestrian、traffic cone、manmade、vegetation 上的概率并集计算，不用 hard argmax。正占据残差、Semantic 分支、Memory 检索与未来递推均不变。三个系数只是诊断网格，不是推荐的训练超参数。
+Fix the same A+B epoch 1 checkpoint and the same forward pass. Compare original A+B, restoration of Baseline position only at 1s/2s, and soft protection of occupancy **negative** residuals only at 2s/3s (retaining 25%, 50%, or 75% of the original residual). Protection mass is calculated from the probability union of the Baseline and corrected semantic distributions over motorcycle, pedestrian, traffic cone, manmade, and vegetation, without hard argmax. Positive occupancy residuals, the Semantic branch, Memory retrieval, and future recurrence remain unchanged. The three coefficients are only a diagnostic grid, not recommended training hyperparameters.
 
-先运行 256 帧扫描。`summarize_future_memory_scan.py` 用场景 SHA256 的奇偶拆成筛选集/留出集；仅在筛选集上选择 2s/3s mIoU 较优且二值 IoU 降幅不超过 0.10 个百分点的方案，再看留出集。留出集也不能替代完整验证。
+First run a 256-frame scan. `summarize_future_memory_scan.py` splits scenes into selection/holdout sets by the parity of their SHA256. Select a scheme only on the selection set, requiring better 2s/3s mIoU and a binary IoU decline of no more than 0.10 percentage points, then inspect the holdout set. The holdout set also cannot replace full validation.
 
 ```bash
 bash /data/jxy/projects/tools/run_next_future_memory_diagnostics.sh scan
 ```
 
-无论扫描结果如何，1s/2s 位置干预只在已有 256 帧显著；需单独完成 4219 帧验证。该脚本只比较原始 A+B 与关闭 1s/2s 位置修正，避免多方案完整评估浪费 GPU。评估会持续较久，应在 GPU 空闲后运行：
+Regardless of scan results, the 1s/2s position intervention has shown significance only on the existing 256 frames; separate validation on 4219 frames is required. This script compares only original A+B against disabling 1s/2s position corrections, avoiding wasted GPU time on full evaluations of multiple schemes. Evaluation will take a while and should run after the GPUs become idle:
 
 ```bash
 bash /data/jxy/projects/tools/run_next_future_memory_diagnostics.sh position-full
 ```
 
-两个输出目录分别是 `work_dirs/diagnostics-ab-miou-20261016/scan256` 和 `position_full4219`。脚本拒绝覆盖已有目录。比较 1s/2s/3s 二值 IoU、mIoU、逐类 TP/FP/FN，重点核对 2s/3s 的 pedestrian、vegetation 和 manmade。只有在扫描的留出集方向一致且完整验证未伤害关键指标后，才考虑真正改变模型配置；此时需要新的训练/完整验证，不能把输出干预直接当新模型成绩。
+The two output directories are `work_dirs/diagnostics-ab-miou-20261016/scan256` and `position_full4219`. The script refuses to overwrite existing directories. Compare 1s/2s/3s binary IoU, mIoU, and per-class TP/FP/FN, focusing on pedestrian, vegetation, and manmade at 2s/3s. Consider actually changing model configuration only if the scan's holdout set agrees in direction and full validation does not harm key metrics; new training/full validation is then required, and output interventions cannot directly count as new model scores.
 
-## 阶段 2：SoftVoxel 中心对齐单变量实验
+## Stage 2: single-variable SoftVoxel center-alignment experiment
 
-旧 SoftVoxel 将索引 `k` 当 `(origin+k·voxel_size)`，GT 的索引 `k` 实际代表体素中心 `(origin+(k+0.5)·voxel_size)`。新增可选 `soft_voxel_center_offset=0.5` 让训练损失的三线性插值围绕 GT 中心对称；边界处丢弃无效角点并归一化有效角点权重，超出场景的点不投回边界。原 V2 默认仍为 0/False，不改变已有 checkpoint 的推理。
+Old SoftVoxel treats index `k` as `(origin+k·voxel_size)`, whereas GT index `k` actually represents voxel center `(origin+(k+0.5)·voxel_size)`. The new optional `soft_voxel_center_offset=0.5` makes the training loss's trilinear interpolation symmetric around GT centers; at boundaries, invalid corners are discarded and valid-corner weights are normalized, while points outside the scene are not projected back onto its boundary. Original V2 defaults remain 0/False, leaving inference with existing checkpoints unchanged.
 
-独立配置从 A+B epoch 1 恢复 optimizer/runner，在固定 `2e-5` 学习率下只追加一个 epoch，产生本地 epoch 2；原 A+B epoch 2 是对照。注意：这项实验检验的是训练损失，不会让已训练 checkpoint 的推理直接变化，不能用输出干预替代。完成阶段 1 诊断并确认 GPU 空闲后，用户本地运行：
+The separate configuration restores optimizer/runner from A+B epoch 1 and adds only one epoch at a fixed `2e-5` learning rate, producing local epoch 2; original A+B epoch 2 is the control. Note: this experiment tests the training loss and will not directly change inference with an already-trained checkpoint; output interventions cannot replace it. After completing Stage 1 diagnosis and confirming that the GPUs are idle, the user runs locally:
 
 ```bash
 bash /data/jxy/projects/tools/run_train_future_memory_softvoxel_center.sh
 ```
 
-保存到独立目录 `work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center`，不覆盖 A+B 或 V1 checkpoint。训练结束后用现有 dump-only + 离线 evaluator 对新 epoch 2 做完整验证，并与原 A+B epoch 2、同一个 Baseline 比较 Future IoU/mIoU 和逐类召回。若新 loss 未改善 2s/3s mIoU，或二值 IoU 明显下降，则停止该支路；若方向有利，再考虑下一轮更长期训练。训练之前只可说“代码接通”，不能说已提升指标。
+Save to the separate directory `work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center`, without overwriting A+B or V1 checkpoints. After training, fully validate the new epoch 2 using existing dump-only + offline evaluator, and compare Future IoU/mIoU and per-class recall against original A+B epoch 2 and the same Baseline. If the new loss does not improve 2s/3s mIoU, or binary IoU declines substantially, stop this branch; if the direction is favorable, consider a further round of longer training. Before training, only "the code is connected" can be claimed, not improved metrics.
 
-## 可能的后续（尚未实现或启动）
+## Possible follow-ups (not implemented or launched yet)
 
-若输出扫描证实 occupancy 保护有益，再设计可训练的类别/时刻条件或 Baseline anchor；避免直接把输出级 `alpha` 当训练结果。若位置全量验证证实 1s/2s 伤害，再单独调位置 gate 或位置损失。每次只改一个因素，不同时改 Top-K、阈值与多个损失权重。
+If the output scan confirms that occupancy protection helps, design trainable class/time conditioning or a Baseline anchor; avoid directly treating output-level `alpha` as a training result. If full position validation confirms damage at 1s/2s, adjust the position gate or position loss separately. Change only one factor at a time; do not simultaneously change Top-K, thresholds, and multiple loss weights.
 
-## 2026-10-18进展
+## 2026-10-18 progress
 
-256帧扫描已经完成：筛选集选中`alpha=0.25`，但留出集2s/3s二值IoU下降
-0.2367个百分点，因此不直接采用。`alpha=0.75`在留出集mIoU +0.1851、
-IoU +0.0603个百分点，仍只是诊断。完整4219帧位置输出干预（A+B epoch1）
-把1s/2s位置恢复Baseline后，Future IoU 22.7907→22.8043、mIoU
-13.1653→13.3007；这不是新训练checkpoint。
+The 256-frame scan has completed: the selection set chose `alpha=0.25`, but holdout-set 2s/3s binary IoU declined by
+0.2367 percentage points, so it is not adopted directly. On the holdout set, `alpha=0.75` yielded mIoU +0.1851 and
+IoU +0.0603 percentage points, still only a diagnostic result. In the full 4219-frame position output intervention (A+B epoch1),
+restoring 1s/2s position to Baseline changed Future IoU from 22.7907→22.8043 and mIoU from
+13.1653→13.3007; this is not a newly trained checkpoint.
 
-SoftVoxel中心对齐从A+B epoch1**正确恢复**并仅续训一个epoch；结果checkpoint
-与来源的706个非V2张量完全一致。完整4219帧评估得到IoU
-`[25.68,23.85,22.84,21.68]`、mIoU `[18.20,15.28,13.21,11.39]`，
-Future均值22.7900/13.2933；同轮次旧SoftVoxel对照为22.7433/13.1067。
-此前一次漏传`--resume-from`的错误训练结果保留在无`-from-ab1`后缀的目录，
-不得用于比较。后续优先在中心对齐checkpoint上复查位置分支干预，
-再决定是否改可训练Position Gate；不要把输出干预和训练结果合并记为同一checkpoint。
+SoftVoxel center alignment **correctly resumed** from A+B epoch1 and continued for only one epoch; the resulting checkpoint's
+706 non-V2 tensors are identical to the source. Full evaluation on 4219 frames yielded IoU
+`[25.68,23.85,22.84,21.68]` and mIoU `[18.20,15.28,13.21,11.39]`,
+with Future means of 22.7900/13.2933; the old-SoftVoxel control at the same epoch was 22.7433/13.1067.
+An earlier erroneous training run that omitted `--resume-from` is retained in the directory without the `-from-ab1` suffix
+and must not be used for comparison. Next, prioritize rechecking the position-branch intervention on the center-aligned checkpoint,
+then decide whether to change the trainable Position Gate; do not combine output-intervention and training results as if they came from one checkpoint.

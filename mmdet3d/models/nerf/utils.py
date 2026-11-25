@@ -93,7 +93,7 @@ class cos_sim_loss(nn.Module):
     
     def forward(self, feat_est, feat_gt):
         # loss = self.criterion(feat_est, feat_gt)
-        # 创建target尺寸为feat_est第一维度的全1张量
+        # Create an all-ones target matching the first dimension of feat_est.
         target = torch.ones(feat_est.shape[0]).cuda()
         loss = self.criterion(feat_est, feat_gt, target)
         return loss

@@ -180,7 +180,7 @@ class SMOKECoder(BaseBBoxCoder):
         Return:
             Tensor: yaw(Orientation). Notice that the yaw's
                 range is [-np.pi, np.pi].
-                shape：(N, 1）
+                shape:(N, 1)
         """
         assert len(ori_vector) == len(locations)
         locations = locations.view(-1, 3)

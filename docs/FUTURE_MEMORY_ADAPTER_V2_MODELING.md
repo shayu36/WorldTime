@@ -1,54 +1,54 @@
-# Future Memory Adapter V2 建模说明
+# Future Memory Adapter V2 modeling notes
 
-## 1. V1 基线与保留策略
+## 1. V1 baseline and preservation policy
 
-V1 的正式结果保持原样并继续可复现：epoch 4 的 Future Mean mIoU 为
-13.2500（相对 Baseline +0.0267），epoch 6 的 Future Mean IoU 为 22.2467
-（相对 Baseline +0.0333）。`FutureMemoryAdapter`、其配置和 checkpoint 路径
-没有改名或覆盖；V2 通过独立的 `FutureMemoryAdapterV2` 类和独立配置启用。
+Official V1 results remain unchanged and reproducible: epoch 4 Future Mean mIoU is
+13.2500 (+0.0267 relative to Baseline), and epoch 6 Future Mean IoU is 22.2467
+(+0.0333 relative to Baseline). `FutureMemoryAdapter`, its configurations, and checkpoint paths
+have not been renamed or overwritten; V2 is enabled through the separate `FutureMemoryAdapterV2` class and separate configurations.
 
-本阶段只做代码级验收，没有 V2 正式训练或 NuScenes 完整验证，因此没有新的
-IoU/mIoU 结论。
+This stage covers code-level acceptance only, with no official V2 training or full NuScenes validation, so there are no new
+IoU/mIoU conclusions.
 
-## 2. V2 解决的问题
+## 2. Problems addressed by V2
 
-V2 修复五个相互关联的问题：候选支持统计量不再被 top-k 数量错误缩小；预测
-时刻使用未来有效年龄；Query 粗检索后在 Query 内做 Point 检索；语义匹配受
-不确定性、双路候选和 Semantic Dropout 约束，避免 Baseline 错误确认偏差；
-训练同时监督 semantic、occupancy、阈值边界和稀疏可微软体素目标，使训练信号
-更接近最终 IoU/mIoU 解码流程。
+V2 fixes five interrelated problems: candidate-support statistics are no longer incorrectly reduced by the top-k count; prediction
+times use future effective ages; Query-level coarse retrieval is followed by Point retrieval within each Query; semantic matching is constrained by
+uncertainty, dual-path candidates, and Semantic Dropout to avoid confirmation bias from Baseline errors;
+training jointly supervises semantics, occupancy, threshold boundaries, and a sparse differentiable soft-voxel objective, bringing training signals
+closer to the final IoU/mIoU decoding process.
 
-## 3. Query → Point 两阶段数据流
+## 3. Query → Point two-stage data flow
 
-对每个目标时刻（1s、2s、3s）读取 Baseline 快照 `Q_base/P_base/S_base`：
+For each target horizon (1s, 2s, 3s), read the Baseline snapshot `Q_base/P_base/S_base`:
 
-1. Query 粗检索计算 feature/geometry 路径和 semantic 增强路径，分别取
-   `coarse_topk_geometry=8`、`coarse_topk_semantic=8`，稳定去重后形成并集。
-2. geometry 候选和 semantic 候选在并集内部分别做 masked softmax 读取，使用
-   `coarse_geometry_context_weight`（默认 0.5）融合成该 Query 自己的
-   `H_coarse:[B,Q,C]`；因此 geometry 路径不会在读取阶段被错误语义关闭。
-3. 对每个当前 Query，只展开并集中的历史 Query 及其 48 个历史点；历史
-   Query 语义分布广播到点，但每个历史点保留自己的空间位置编码。
-4. 在 `query_chunk_size=64` 的块内计算 Point Attention，取最多
-   `point_topk=8`，得到 `H_qr`：`[B,Q,R,C]`，以及 `G_qr`：`[B,Q,R,1]`。
-   默认一半完整 attention heads（`point_geometry_head_fraction=0.5`）仅读取
-   geometry 候选、几何/特征/时间分数，不接收显式语义项；其余 heads 才使用
-   semantic-enhanced 分数。多头特征是拼接而不是除以 head 数。
-5. Point Adapter 输入包含 Query、当前点位置编码、Context、Query-Context
-   差异、horizon embedding、候选数、可靠性、有效年龄、距离、不确定性和
-   当前/历史语义分歧，输出 semantic/occupancy/position residual 和 Point Gate。
+1. Query-level coarse retrieval computes feature/geometry and semantic-enhanced paths, taking
+   `coarse_topk_geometry=8` and `coarse_topk_semantic=8`, respectively, and forms their union after stable deduplication.
+2. Read geometry candidates and semantic candidates separately using masked softmax within the union, and fuse them with
+   `coarse_geometry_context_weight` (default 0.5) to obtain each Query's own
+   `H_coarse:[B,Q,C]`; incorrect semantics therefore cannot shut off the geometry path during reading.
+3. For each current Query, expand only historical Queries in the union and their 48 historical points; historical
+   Query semantic distributions are broadcast to points, but each historical point retains its own spatial position encoding.
+4. Compute Point Attention in chunks of `query_chunk_size=64`, selecting at most
+   `point_topk=8`, to obtain `H_qr`: `[B,Q,R,C]` and `G_qr`: `[B,Q,R,1]`.
+   By default, half the complete attention heads (`point_geometry_head_fraction=0.5`) read only
+   geometry candidates and geometry/feature/time scores, receiving no explicit semantic term; only the remaining heads use
+   semantic-enhanced scores. Multi-head features are concatenated rather than divided by the number of heads.
+5. Point Adapter inputs include the Query, current-point position encoding, Context, Query–Context
+   differences, horizon embedding, candidate count, reliability, effective age, distance, uncertainty, and
+   current/historical semantic disagreement; outputs are semantic/occupancy/position residuals and a Point Gate.
 
-默认规模的粗分数最大形状为 `[B,Q,768]`（最多 3×256 历史 Query），Point
-Attention 最大形状为 `[B,64,48,8,768]`（64 个当前 Query、48 点、8 个 head、
-最多 16 个粗候选×48 历史点）。不存在全部当前点×全部历史点的全局矩阵。
+At the default scale, coarse scores have a maximum shape of `[B,Q,768]` (up to 3×256 historical Queries), and Point
+Attention has a maximum shape of `[B,64,48,8,768]` (64 current Queries, 48 points, 8 heads,
+and up to 16 coarse candidates×48 historical points). There is no global matrix of all current points×all historical points.
 
-## 4. 不确定性感知语义匹配与双路候选
+## 4. Uncertainty-aware semantic matching and dual-path candidates
 
-当前每个点使用 `softmax(S_base)`。归一化熵为 `U_qr`，top1-top2 margin 同时
-记录；显式语义权重为 `(1-U_qr)^gamma`，并由 `semantic_weight_floor` 限制
-下界。高熵点会降低语义匹配，但不会删除空间/特征合理的 Memory。
+Each current point uses `softmax(S_base)`. Its normalized entropy is `U_qr`, and the top1-top2 margin is also
+recorded; explicit semantic weight is `(1-U_qr)^gamma`, with a lower bound imposed by
+`semantic_weight_floor`. High-entropy points reduce semantic matching without discarding spatially/feature-consistent Memory.
 
-粗检索固定包含两条路径：
+Coarse retrieval always includes two paths:
 
 ```text
 A_geometry = A_feature - A_distance - A_effective_age + A_reliability
@@ -56,27 +56,27 @@ A_semantic = A_geometry + w_sem * A_semantic_compatibility
 M_q = stable_unique(TopK(A_geometry) ∪ TopK(A_semantic))
 ```
 
-geometry 路径始终保留，显式语义错误时仍可进入候选并集。训练模式可按
-`semantic_dropout_probability` 将当前语义替换为均匀分布；evaluation 严格关闭。
-Point Adapter 接收完整的当前/历史逐点语义概率、语义差向量、余弦相似度和
-JS divergence。因此语义不一致的近邻 Memory 有机会用于纠错，而不是在检索
-阶段硬删除。
+The geometry path is always retained, allowing candidates to enter the union even when explicit semantics are wrong. During training,
+`semantic_dropout_probability` can replace current semantics with a uniform distribution; it is strictly disabled during evaluation.
+The Point Adapter receives complete current/historical per-point semantic probabilities, semantic-difference vectors, cosine similarity, and
+JS divergence. Nearby Memory with inconsistent semantics can therefore be used for correction rather than being hard-deleted
+at retrieval.
 
 ## 5. Effective age
 
-缓存只保存基础年龄 `base_age = t_current - t_history`。V2 对每个目标时刻创建
-新张量，不修改 cache：
+The cache stores only base age, `base_age = t_current - t_history`. V2 creates a
+new tensor for each target horizon without modifying the cache:
 
 ```text
 effective_age = base_age + horizon_seconds
 1s → +1.0s, 2s → +2.0s, 3s → +3.0s
 ```
 
-最大年龄筛选、时间分数、support age、Adapter diagnostics 都使用
-`effective_age`；diagnostics 同时保留 `base_age`、`effective_age` 和
-`horizon_seconds`。
+Maximum-age filtering, temporal scores, support age, and Adapter diagnostics all use
+`effective_age`; diagnostics also retain `base_age`, `effective_age`, and
+`horizon_seconds`.
 
-候选统计使用真正的权重质量：
+Candidate statistics use actual weight mass:
 
 ```python
 valid_weights = weights * top_valid.to(weights.dtype)
@@ -84,11 +84,11 @@ weight_mass = valid_weights.sum(-1).clamp_min(EPS)
 support = (valid_weights * selected).sum(-1) / weight_mass
 ```
 
-不再除以有效候选数量，部分无效候选、dropout、无候选和多 head 汇总都保持有限。
+They are no longer divided by the number of valid candidates, and remain finite for partially invalid candidates, dropout, no candidates, and multi-head aggregation.
 
-## 6. Semantic / occupancy 解耦
+## 6. Semantic / occupancy decoupling
 
-V2 产生：
+V2 produces:
 
 ```text
 S_sem = S_base + G * DeltaS
@@ -96,13 +96,13 @@ O     = max_c(S_base) + G * DeltaO
 S_decode = S_sem + (O - max_c(S_sem))
 ```
 
-因此 `argmax(S_decode) == argmax(S_sem)` 且 `max(S_decode) == O`。类别排序只由
-semantic 分支决定，是否越过类别阈值只由 occupancy 分支决定；现有 `get_occ()`
-仍可使用 `S_decode`。零残差或无有效 Memory 时严格退化为 Baseline。
+Thus, `argmax(S_decode) == argmax(S_sem)` and `max(S_decode) == O`. Class ranking is determined only by the
+semantic branch, and crossing a class threshold is determined only by the occupancy branch; the existing `get_occ()`
+can still use `S_decode`. Zero residuals or no valid Memory reduce strictly to Baseline.
 
-## 7. 新损失
+## 7. New losses
 
-每个目标时刻只增加以下损失，权重全部在 V2 配置中：
+Only the following losses are added at each target horizon, with all weights in the V2 configuration:
 
 ```text
 mem_1s.loss_base_cls (1.0)
@@ -114,56 +114,56 @@ mem_1s.loss_soft_voxel(0.10)
 mem_1s.loss_pts       (0.50)
 ```
 
-`mem_2s.*`、`mem_3s.*` 同构。原始 future 分类损失作为 `loss_base_cls` 稳定锚点
-保留，原始 point matching 作为 `loss_pts` 保留。Occupancy 正样本首先按最终评估
-一致的 0.4m GT 非空体素成员关系确定；对于刚好落在相邻空体素但仍接近 GT 的点，
-再使用非空体素中心的邻近条件补充。默认邻近半径由半体素三维对角线推导：
-`0.5 * ||voxel_size||_2 = 0.3464m`，不再使用只能覆盖立方体内切球的 0.20m。
-因此位于非空体素角落的点不会被错误监督为空。
+`mem_2s.*` and `mem_3s.*` have the same structure. The original future classification loss is retained as the stable
+`loss_base_cls` anchor, and original point matching is retained as `loss_pts`. Occupancy positives are first determined by membership
+in 0.4m non-free GT voxels, consistent with final evaluation; points that fall just inside an adjacent free voxel but remain close to GT
+are supplemented by proximity to a non-free voxel center. The default proximity radius comes from half the voxel's three-dimensional diagonal:
+`0.5 * ||voxel_size||_2 = 0.3464m`, replacing 0.20m, which covers only the cube's inscribed sphere.
+Points at corners of non-free voxels therefore will not be incorrectly supervised as free.
 
-Occupancy BCE 和 threshold margin loss 分别计算正、负组内均值，再用配置中的
-`occupancy_{positive,negative}_weight` 与
-`threshold_{positive,negative}_weight` 融合，避免数量占优的负样本压低全部未来点。
-`loss_occ_anchor` 以 Smooth-L1 将独立 occupancy logit `O` 保守锚定到冻结 Baseline
-的 `max_c(S_base)`；其默认权重 0.05，小于 occupancy 主损失 0.25，仅抑制全局召回
-塌缩，不关闭可学习的 occupancy residual。semantic 只在可靠占据匹配点上使用现有
-类别权重；threshold loss 从 `pts_bbox_head.test_cfg.score_thr` 动态转换为
-logit 阈值。SoftVoxel 使用每个点周围 8 个连续坐标体素的三线性权重和 noisy-OR，
-只在预测体素与 GT 非空体素的稀疏并集上计算 Soft-IoU，保持对 semantic logits、
-occupancy logits 和连续点位置的梯度。
+Occupancy BCE and threshold margin loss calculate separate positive- and negative-group means, then combine them using the configured
+`occupancy_{positive,negative}_weight` and
+`threshold_{positive,negative}_weight`, preventing numerically dominant negative samples from suppressing all future points.
+`loss_occ_anchor` uses Smooth-L1 to conservatively anchor the independent occupancy logit `O` to the frozen Baseline's
+`max_c(S_base)`; its default weight, 0.05, is below the main occupancy loss weight of 0.25, suppressing only global recall
+collapse without disabling the learnable occupancy residual. Semantic loss uses existing
+class weights only on reliably matched occupied points; threshold loss dynamically converts `pts_bbox_head.test_cfg.score_thr` into
+logit thresholds. SoftVoxel uses trilinear weights and noisy-OR over the 8 continuous-coordinate voxels around each point,
+computing Soft-IoU only on the sparse union of predicted voxels and non-free GT voxels, while retaining gradients for semantic logits,
+occupancy logits, and continuous point positions.
 
-0s 没有新增 Memory loss，0.5s、1.5s、2.5s 也不接入 V2 loss。
+No Memory loss is added at 0s, and 0.5s, 1.5s, and 2.5s also do not receive V2 losses.
 
-这次修正源于前向评估中观察到的未来占据召回下降：旧的 0.20m 中心距离规则会把
-处于 0.4m 体素内部、但距中心大于 0.20m 的合法点当成负样本；独立 occupancy
-分支随后通过 `max(S_decode)=O` 将所有类别一起压到阈值以下。该现象属于训练目标与
-体素评估定义不一致，不是 semantic argmax 本身的错误。已有旧目标训练得到的 V2
-checkpoint 不会因代码修正而自动改变，后续验证应从冻结 Baseline checkpoint 启动
-新的 V2 训练。本文件不据此声称 IoU/mIoU 已提升。
+This correction arose from reduced future occupancy recall observed in forward evaluation: the old 0.20m center-distance rule treated
+valid points inside a 0.4m voxel but more than 0.20m from its center as negatives; the independent occupancy
+branch then suppressed all classes below threshold through `max(S_decode)=O`. This is a mismatch between the training objective and
+the voxel-evaluation definition, rather than an error in semantic argmax itself. V2
+checkpoints trained with the old objective will not automatically change after the code fix; subsequent validation should start
+new V2 training from the frozen Baseline checkpoint. This document does not claim IoU/mIoU improvements on that basis.
 
-## 8. Recurrence 隔离与冻结边界
+## 8. Recurrence isolation and freezing boundaries
 
-V2 只读取每个目标时刻的 Baseline 快照。Context、gate、修正 logits、occupancy
-logits、修正点和修正 query feature 都不会写回 OPUS/SparseWorld future recurrence；
-改变 1s 输出不会改变 2s Baseline state，改变 2s 输出不会改变 3s state。
+V2 only reads the Baseline snapshot at each target horizon. Context, gates, corrected logits, occupancy
+logits, corrected points, and corrected query features are never written back into OPUS/SparseWorld future recurrence;
+changing the 1s output does not change the 2s Baseline state, and changing the 2s output does not change the 3s state.
 
-V2 optimizer 白名单只有：
+The V2 optimizer allowlist contains only:
 
 ```text
 future_memory_adapter_v2.*
 ```
 
-Baseline、原始 query encoding、OPUS head、recurrence、原始分类/回归分支均冻结，
-冻结模块保持 eval mode。V2 q/k/v、位置和语义投影使用正常 Xavier 初始化，gate
-bias 为 -1，三个 residual head 的最后一层零初始化；没有 `1e-3` 全局缩放。
+Baseline, original query encoding, the OPUS head, recurrence, and original classification/regression branches are all frozen,
+and frozen modules remain in eval mode. V2 q/k/v, position, and semantic projections use normal Xavier initialization; gate
+bias is -1, and the last layers of the three residual heads are zero-initialized; there is no `1e-3` global scaling.
 
-## 9. 候选隔离与候选内粗 Context
+## 9. Candidate isolation and coarse Context within candidates
 
-早期 V2 曾将全部 Memory Query 的 coarse_k.mean 与 coarse_v.mean 合成
-coarse_summary，并注入所有当前 Query。这会绕过 memory_valid、effective age、
-最大年龄、空间半径和 Top-K 并集，现已彻底删除。
+Early V2 combined coarse_k.mean and coarse_v.mean over all Memory Queries into
+coarse_summary and injected it into every current Query. This bypassed memory_valid, effective age,
+maximum age, spatial radius, and the Top-K union, and has now been completely removed.
 
-现在每个 Query 的粗读取严格限定为：
+Each Query's coarse read is now strictly restricted to:
 
     U_q = stable_unique(TopK(A_geometry) union TopK(A_semantic))
     alpha_qm^g = MaskedSoftmax(A_geometry[q,m]), m in U_q^g
@@ -172,27 +172,27 @@ coarse_summary，并注入所有当前 Query。这会绕过 memory_valid、effec
     H_s[q] = sum(m in U_q^s) alpha_qm^s * V_m
     H_coarse[q] = lambda_g H_g[q] + lambda_s H_s[q]
 
-其中 `lambda_g` 在两条路径都有候选时至少为配置的非零下界；只有一条路径有
-效时另一条系数为零。`H_coarse` 的 shape 为 [B,Q,C]。重复入选的候选只保留
-第一次出现的位置，semantic 重复槽不会被第二次累计；每条路径的原始连续分数
-在自己的去重候选槽内参与 softmax。全部候选无效时两组 alpha 与 H_coarse
-严格为零。
-未选中、memory_valid=False、effective age 超限或粗半径外的 Memory 不会进入
-粗 Context，也不会展开到 Point Attention。当前点自身的 qpoint 仅作为 Point
-Attention 的 Query 条件，不会累加进历史 Point Memory Context。
+Here, `lambda_g` is at least the configured nonzero lower bound when both paths have candidates; when only one path is
+valid, the other coefficient is zero. `H_coarse` has shape [B,Q,C]. A candidate selected more than once retains only
+its first occurrence, and duplicate semantic slots are not accumulated again; each path's original continuous scores
+participate in softmax within its own deduplicated candidate slots. When all candidates are invalid, both alpha groups and H_coarse
+are strictly zero.
+Memory that is unselected, has memory_valid=False, exceeds the effective-age limit, or lies outside the coarse radius cannot enter
+coarse Context or expand into Point Attention. The current point's own qpoint serves only as the Query
+condition for Point Attention and is not accumulated into historical Point Memory Context.
 
-Point Attention 同样只展开 `U_q` 内历史 Query 的历史点。geometry heads 的
-masked softmax 只看 geometry 槽且不加入显式语义兼容项；semantic heads 看稳定
-并集并加入不确定性加权的语义项。于是错误的高置信度 Baseline 语义不能把 geometry
-候选的读取权重压到零。
+Point Attention likewise expands only historical points from historical Queries in `U_q`. Geometry heads'
+masked softmax sees only geometry slots and adds no explicit semantic-compatibility term; semantic heads see the stable
+union and add an uncertainty-weighted semantic term. Thus, incorrect high-confidence Baseline semantics cannot suppress geometry
+candidate read weights to zero.
 
-## 10. 完整逐点语义分歧特征
+## 10. Complete per-point semantic disagreement features
 
-Semantic Dropout 只修改检索条件 P_retrieval 和 w_retrieval，不修改 Baseline
-logits，也不替换 Adapter 使用的 P_current。历史 Query 级语义广播到候选内部
-的历史点，经 Point Attention 后形成每个当前点独立的 P_memory。
+Semantic Dropout modifies only retrieval conditions P_retrieval and w_retrieval, not Baseline
+logits, and does not replace the P_current used by the Adapter. Historical Query-level semantics are broadcast to historical points
+within candidates and produce a separate P_memory for each current point after Point Attention.
 
-Adapter 显式接收以下 shape：
+The Adapter explicitly receives the following shapes:
 
     P_current:             [B,Q,R,17]
     P_memory:              [B,Q,R,17]
@@ -203,26 +203,26 @@ Adapter 显式接收以下 shape：
     top1_top2_margin:      [B,Q,R,1]
     semantic_weight:       [B,Q,R,1]
 
-无有效候选时 P_memory、语义差向量、cosine 和 JS 均安全置零，Point Gate 为零。
-Adapter 输入宽度由模块参数推导为
-5*embed_dims + 3*num_classes + 10，默认是 1341；没有写死 Query 数、点数或
-类别数。语义不同仍不是 hard mask，geometry 分支持终保留。
+With no valid candidates, P_memory, the semantic-difference vector, cosine, and JS are safely set to zero, and the Point Gate is zero.
+The Adapter input width is derived from module parameters as
+5*embed_dims + 3*num_classes + 10, which defaults to 1341; Query count, point count, and
+class count are not hard-coded. Semantic disagreement still does not act as a hard mask, and the geometry branch remains available throughout.
 
-## 11. eligible 与 selected 候选计数
+## 11. Eligible and selected candidate counts
 
-- eligible_point_count [B,Q,R]：通过 Memory 有效性、effective age、粗候选
-  限制和 point radius 后，进入 Point Top-K 选择范围的历史点数量。
-- selected_point_count [B,Q,R]：完成 Point Top-K 后实际参与 Point Attention
-  的有效历史点数量，不超过 point_topk。
+- eligible_point_count [B,Q,R]: the number of historical points eligible for Point Top-K selection after passing Memory validity, effective age, coarse-candidate
+  restrictions, and point radius.
+- selected_point_count [B,Q,R]: the number of valid historical points actually participating in Point Attention
+  after Point Top-K, no greater than point_topk.
 
-Adapter 同时使用两者：eligible 除以本 Query 的粗候选展开容量
-Ku*R_memory，selected 除以 point_topk。Padding 与无效候选不计数；空候选时
-两者均为零。
+The Adapter uses both: eligible is divided by this Query's coarse-candidate expansion capacity
+Ku*R_memory, and selected is divided by point_topk. Padding and invalid candidates are not counted; with no candidates,
+both are zero.
 
-## 12. 位置残差的严格恒等
+## 12. Strict identity of position residuals
 
-已核实 SparseWorld point proposal 使用 encode_points/decode_points 定义的
-线性归一化坐标。V2 只处理有候选且 gate 非零的点，并计算相对编码变化：
+SparseWorld point proposals have been verified to use the linear normalized coordinates defined by
+encode_points/decode_points. V2 processes only points with candidates and nonzero gates, computing relative encoding changes:
 
     decoded_base = decode(base_pos)
     encoded_base = encode(decoded_base)
@@ -230,45 +230,45 @@ Ku*R_memory，selected 除以 point_topk。Padding 与无效候选不计数；�
     encoded_delta = encoded_shifted - encoded_base
     output_pos = base_pos + encoded_delta
 
-当 delta_position_metric 为零时，两次 encode 输入相同，encoded_delta 严格为
-零；无候选或 gate 为零时直接返回原始 base_pos。非零残差仍按 pc_range 转换，
-输入不被原地修改，位置学习路径也没有 detach。
+When delta_position_metric is zero, both encode calls have identical inputs, so encoded_delta is strictly
+zero; with no candidates or a zero gate, the original base_pos is returned directly. Nonzero residuals are still converted using pc_range,
+inputs are not modified in place, and the position-learning path is not detached.
 
-V1 不调用该相对编码辅助函数。V1 的 `_refine_future_memory_points` 保留原来的
-`encode(decode(base_pos) + delta)` 路径，V2 单独调用
-`_refine_future_memory_points_v2`，从而不改变 V1 checkpoint 的运行路径。
+V1 does not call this relative-encoding helper. V1's `_refine_future_memory_points` retains the original
+`encode(decode(base_pos) + delta)` path; V2 separately calls
+`_refine_future_memory_points_v2`, preserving the execution path of V1 checkpoints.
 
-## 13. cls_weights 统一转换
+## 13. Unified cls_weights conversion
 
-权重来源优先级不变：首先读取 pts_bbox_head.train_cfg['cls_weights']，不存在时
-回退模型 class_weights。list、tuple、CPU Tensor 和 CUDA Tensor 最终统一使用
-torch.as_tensor，并指定 S_sem 的 device 与 dtype，然后 flatten 为一维。
+Weight-source priority is unchanged: first read pts_bbox_head.train_cfg['cls_weights'], and if it is absent,
+fall back to model class_weights. Lists, tuples, CPU Tensors, and CUDA Tensors all ultimately use
+torch.as_tensor with S_sem's device and dtype, then flatten to one dimension.
 
-转换后严格检查元素数量等于 num_classes；异常同时报告实际数量与期望数量。
-原始配置对象不被修改。同一转换函数也用于 sparse SoftVoxel loss。
+After conversion, the element count is strictly checked against num_classes; errors report both actual and expected counts.
+The original configuration object is unchanged. The same conversion function is also used by sparse SoftVoxel loss.
 
-## 14. 本轮验收边界
+## 14. Acceptance scope for this round
 
-本轮仅完成静态检查、Python 编译、配置解析和不涉及反向传播的小型纯函数/前向
-验收，包括 B=1/B=2、Memory 少于/多于 Top-K、候选隔离、语义特征、位置严格
-恒等以及 loss forward 边界输入。
+This round completed only static checks, Python compilation, configuration parsing, and small pure-function/forward
+acceptance checks without backpropagation, covering B=1/B=2, Memory smaller/larger than Top-K, candidate isolation, semantic features, strict position
+identity, and loss-forward boundary inputs.
 
-本轮没有执行 backward、torch.autograd.grad、optimizer step、梯度验收、训练
-数据迭代、200-iteration smoke、V1 对照实验、V2 正式训练或完整 nuScenes
-评估。因此当前只说明已知代码问题已修正且静态/前向验收通过；尚未进行梯度
-验收和训练前 smoke，不能据此声称 V2 已具备正式训练结论，也没有新的
-IoU/mIoU 提升结论。
+This round did not run backward, torch.autograd.grad, optimizer steps, gradient acceptance checks, training
+data iteration, a 200-iteration smoke test, V1 control experiments, official V2 training, or full nuScenes
+evaluation. The current conclusion is only that known code issues have been corrected and static/forward acceptance passed; gradient
+acceptance and the pre-training smoke test remain outstanding. This does not establish official V2 training conclusions, and there are no new
+IoU/mIoU improvement conclusions.
 
-在 24 GB 显存卡上进行后续 V2 训练时，独立配置默认
-`activation_checkpoint=True`、`save_on_cpu=False`。Point Attention 和 Adapter
-MLP 仍按 `query_chunk_size` 分块，但 chunk 只能降低瞬时工作区，不能缩短反向图
-保存到统一 backward 之前的生命周期。因此训练模式使用 non-reentrant activation
-checkpoint，在 backward 时重算 V2，而不是同时保存 1s/2s/3s 的完整点级图。
-checkpointed 路径只返回损失需要的 delta_s/delta_o/delta_p/gate，不构造大型审计
-diagnostics；evaluation 和普通前向测试仍保留完整 diagnostics。
+For subsequent V2 training on 24 GB cards, the separate configuration defaults to
+`activation_checkpoint=True` and `save_on_cpu=False`. Point Attention and the Adapter
+MLP still process `query_chunk_size` chunks, but chunking only reduces transient workspace; it cannot shorten the lifetime of the backward graph
+saved until the unified backward pass. Training therefore uses non-reentrant activation
+checkpointing to recompute V2 during backward rather than saving complete point-level graphs for 1s/2s/3s simultaneously.
+The checkpointed path returns only delta_s/delta_o/delta_p/gate needed for losses, without constructing large audit
+diagnostics; evaluation and ordinary forward tests retain full diagnostics.
 
-曾尝试的全量 `save_on_cpu=True` 已改为非默认选项。实测 query_chunk_size=1 时，
-该方案没有发生 CUDA OOM，但三个 horizon 的数千个 chunk 把 host saved tensors
-累积到约 128.9 GB，最终触发 Linux OOM killer（SIGKILL -9）。因此它只是调试回退，
-不能与小 chunk 组合用于正式训练。activation checkpoint 不改变前向数值、候选
-集合、Baseline recurrence 或 V1 路径，代价是 backward 会额外重算 V2。
+The previously attempted full `save_on_cpu=True` is now a non-default option. In an actual test with query_chunk_size=1,
+this scheme avoided CUDA OOM, but thousands of chunks across three horizons accumulated host saved tensors
+to approximately 128.9 GB, eventually triggering the Linux OOM killer (SIGKILL -9). It is therefore only a debugging fallback
+and cannot be combined with small chunks for official training. Activation checkpointing does not change forward values, candidate
+sets, Baseline recurrence, or V1 paths; its cost is extra V2 recomputation during backward.

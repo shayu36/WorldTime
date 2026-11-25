@@ -202,7 +202,7 @@ def main():
 
         
     # build the dataloader
-    cfg.data.test.load_interval=args.load_interval  # debug用
+    cfg.data.test.load_interval=args.load_interval  # For debugging.
     
     dataset = build_dataset(cfg.data.test)
     data_loader = build_dataloader(dataset, **test_loader_cfg)

@@ -1,15 +1,15 @@
-# 修复前最佳结果代码快照
+# Code Snapshot of the Best Result Before Repairs
 
-用户指定分支名 `now best before check` 含空格，不是合法 Git 分支名；使用
-`now-best-before-check`。此分支保存 T1 epoch 3 的原代码与运行入口，
-不混入后续 causal ego、Memory provenance 或 base-age 防御修复。
+The user-specified branch name `now best before check` contains spaces and is not a valid Git branch name;
+`now-best-before-check` is used instead. This branch preserves the original code and run entry points
+for T1 epoch 3, without incorporating subsequent causal-ego, Memory-provenance, or base-age safeguards.
 
-## 已有正式结果（原输入协议）
+## Existing official results (original input protocol)
 
-模型：Future Memory Adapter V2，A+B 门控 + SoftVoxel-center + T1。
-4219 帧原生 checkpoint 推理；没有关闭任何 semantic/occupancy/position 分支。
+Model: Future Memory Adapter V2, A+B gating + SoftVoxel-center + T1.
+Native checkpoint inference on 4219 frames; no semantic/occupancy/position branch was disabled.
 
-| 时刻 | IoU | mIoU |
+| Horizon | IoU | mIoU |
 | --- | ---: | ---: |
 | 0s | 25.68 | 18.20 |
 | 1s | 23.88 | 15.39 |
@@ -17,28 +17,34 @@
 | 3s | 21.78 | 11.87 |
 | Future Mean | 22.8400 | 13.5533 |
 
-均值由已保存的两位小数指标计算，不代表底层混淆矩阵具有四位小数精度。
+Means are calculated from the saved metrics rounded to two decimal places;
+they do not imply four-decimal-place precision in the underlying confusion matrices.
 
-配置：
+Configuration:
 `configs/sparseworld/nuscenes-temporal/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-t1.py`
 
-checkpoint（仅保留本地，不上传 Git）：
+Checkpoint (retained locally only, not uploaded to Git):
 `work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-t1-from-center2/epoch_3.pth`
 
-SHA256：`bad9713741aa31373102e9769513ee52832359388990bfb9b365e9e9da40057c`。
+SHA256: `bad9713741aa31373102e9769513ee52832359388990bfb9b365e9e9da40057c`.
 
-训练入口 `tools/run_train_future_memory_occ_t1.sh` 从 center epoch 2 恢复；
-它不是从本快照 epoch 3 继续训练新实验的命令。评估入口为
-`tools/run_eval_future_memory_occ_t0_t1.sh t1`，会拒绝覆盖已有评估目录。
-有效运行配置及完整评估产物仍保存在本地原 work-dir。
+The training entry point `tools/run_train_future_memory_occ_t1.sh` resumes from center epoch 2;
+it is not a command for a new experiment that continues from this snapshot's epoch 3.
+The evaluation entry point is `tools/run_eval_future_memory_occ_t0_t1.sh t1`,
+which refuses to overwrite an existing evaluation directory.
+The effective run configuration and complete evaluation artifacts remain in the original local work-dir.
 
-## 源码身份与范围
+## Source identity and scope
 
-`NOW_BEST_BEFORE_CHECK.json` 收录原训练/评估 provenance、checkpoint 哈希及指标。
-快照中的 `query_memory.py`、`sparseworld_4d_traj.py`、T1 配置和训练脚本 SHA256
-与原训练 provenance 完全一致。数据集、loader 和缓存生成入口保留修复前版本。
-V1 配置和旧 checkpoint 不变。checkpoint、数据集、cache、日志不提交。
+`NOW_BEST_BEFORE_CHECK.json` records the original training/evaluation provenance, checkpoint hash, and metrics.
+The SHA256 values for `query_memory.py`, `sparseworld_4d_traj.py`, the T1 configuration,
+and the training script in this snapshot exactly match the original training provenance.
+The dataset, loader, and cache-generation entry points retain their pre-repair versions.
+V1 configurations and old checkpoints are unchanged.
+Checkpoints, datasets, caches, and logs are not committed.
 
-这是历史结果归档，不是对输入因果性的认证。后续审计发现，旧外部 ego 字段及由其
-生成的历史 Memory 可能包含未来轨迹信息；上述指标保留，但不能据此声明新增
-Memory 通道已排除未来信息。修复和复验应在独立分支、独立 cache/work-dir 进行。
+This is a historical result archive, not a certification of input causality.
+Subsequent audits found that legacy external ego fields and the historical Memory generated from them
+may contain future trajectory information. The metrics above are retained, but they cannot establish
+that future information has been excluded from the added Memory channel.
+Repairs and revalidation should use a separate branch and separate cache/work-dir.

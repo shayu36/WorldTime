@@ -1,75 +1,83 @@
-# SparseWorld Memory 实验与 Debug 汇总
+# SparseWorld Memory Experiment and Debug Summary
 
-更新时间：2026-09-06 UTC
-项目：`/data/jxy/projects`
-基准：`ckpts/epoch_56.pth`
-cache：固定 epoch-56 schema-v2 query memory cache
-范围：只汇总已经完成或正在运行的 Memory 相关实验，不改写历史数值，不补填未完成评估结果。
+Updated: 2026-09-06 UTC
+Project: `/data/jxy/projects`
+Reference checkpoint: `ckpts/epoch_56.pth`
+Cache: fixed epoch-56 schema-v2 query memory cache
+Scope: summarize only completed or running Memory-related experiments; do not rewrite historical values
+or fill in results for incomplete evaluations.
 
-## 当前结论
+## Current conclusions
 
-截至当前整理点，已经完成评估的 Memory-only、joint、Phase2、Phase3、Phase4、M0R1/M1R0/M1R1 变体均未证明 1s/2s/3s IoU 或 mIoU 超过 epoch-56 baseline。
+As of this compilation, none of the evaluated Memory-only, joint, Phase2, Phase3, Phase4,
+or M0R1/M1R0/M1R1 variants has demonstrated 1s/2s/3s IoU or mIoU above the epoch-56 baseline.
 
-Future Memory Adapter 已完成代码级验收和 200-iteration smoke；12-epoch formal 训练正在 `work_dirs/sparseworld-traj-memory-future-adapter-formal-batch4fix/` 运行中，尚无正式 validation 结果。因此目前不能声称 Future Adapter 已提升 IoU/mIoU。
+Future Memory Adapter has completed code-level acceptance checks and a 200-iteration smoke run.
+Its 12-epoch formal training is running in `work_dirs/sparseworld-traj-memory-future-adapter-formal-batch4fix/`,
+with no formal validation results yet. Therefore, improvements in IoU/mIoU cannot currently be claimed for Future Adapter.
 
 ## Baseline
 
-epoch-56 baseline 是当前比较基准，禁止为了新 Memory 实验重新训练或重新评估 baseline。
+The epoch-56 baseline is the current comparison reference.
+Do not retrain or reevaluate the baseline for new Memory experiments.
 
 | Horizon | 0s | 1s | 2s | 3s |
 | --- | ---: | ---: | ---: | ---: |
 | IoU | `25.68` | `23.15` | `22.28` | `21.21` |
 | mIoU | `18.20` | `14.96` | `13.18` | `11.53` |
 
-Baseline future mIoU mean：`13.2233`。
+Baseline future mIoU mean: `13.2233`.
 
-## 已完成正式结果
+## Completed formal results
 
-以下结果均来自 nuScenes val 4,219 samples。`Future mean` 是 1s/2s/3s mIoU 平均值，`Delta` 相对 baseline future mean `13.2233`。
+All results below come from 4,219 nuScenes val samples.
+`Future mean` averages 1s/2s/3s mIoU; `Delta` is relative to the baseline future mean of `13.2233`.
 
-| 实验 | 状态 | mIoU `[0s,1s,2s,3s]` | Mean | Future mean | Delta | 结论 |
+| Experiment | Status | mIoU `[0s,1s,2s,3s]` | Mean | Future mean | Delta | Conclusion |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| epoch-56 baseline | 完成 | `[18.20, 14.96, 13.18, 11.53]` | `14.4675` | `13.2233` | `0.0000` | 当前基准 |
-| Memory-only epoch 12 | 完成 | `[18.20, 14.96, 13.18, 11.53]` | `14.4675` | `13.2233` | `0.0000` | Memory 连续张量有变化，但离散 occupancy 指标不变 |
-| Joint finetune epoch 4 | 完成 | 未单独保留完整表 | — | `13.2233` | `0.0000` | 打印精度上追平 baseline，未超过 |
-| Joint finetune epoch 12 | 完成 | 未单独保留完整表 | — | `13.2033` | `-0.0200` | 未超过 baseline |
-| Phase2 epoch 4 | 完成 | 未单独保留完整表 | — | `13.2233` | `0.0000` | 打印精度上追平 baseline，未超过 |
-| Phase2 epoch 12 | 完成 | `[18.20, 14.92, 13.14, 11.49]` | `14.4375` | `13.1833` | `-0.0400` | 解冻 `pts_bbox_head` 没有带来收益 |
-| Phase3 epoch 12 | 完成 | `[15.48, 14.22, 12.52, 10.95]` | `13.2925` | `12.5633` | `-0.6600` | 旧 refiner 拓扑会破坏 0s，并降低 future |
-| Phase4 future-only epoch 12 | 完成 | `[18.20, 14.38, 12.75, 11.23]` | `14.1400` | `12.7867` | `-0.4366` | 0s 恢复，但 future 仍下降 |
-| M1R0 formal epoch 12 | 完成 | `[18.20, 14.96, 13.18, 11.53]` | `14.4675` | `13.2233` | `0.0000` | 与 baseline 指标一致 |
+| epoch-56 baseline | Complete | `[18.20, 14.96, 13.18, 11.53]` | `14.4675` | `13.2233` | `0.0000` | Current reference |
+| Memory-only epoch 12 | Complete | `[18.20, 14.96, 13.18, 11.53]` | `14.4675` | `13.2233` | `0.0000` | Memory changes continuous tensors, but discrete occupancy metrics remain unchanged |
+| Joint finetune epoch 4 | Complete | Full table not retained separately | — | `13.2233` | `0.0000` | Matches the baseline at printed precision; does not exceed it |
+| Joint finetune epoch 12 | Complete | Full table not retained separately | — | `13.2033` | `-0.0200` | Does not exceed the baseline |
+| Phase2 epoch 4 | Complete | Full table not retained separately | — | `13.2233` | `0.0000` | Matches the baseline at printed precision; does not exceed it |
+| Phase2 epoch 12 | Complete | `[18.20, 14.92, 13.14, 11.49]` | `14.4375` | `13.1833` | `-0.0400` | Unfreezing `pts_bbox_head` provides no gain |
+| Phase3 epoch 12 | Complete | `[15.48, 14.22, 12.52, 10.95]` | `13.2925` | `12.5633` | `-0.6600` | The old refiner topology degrades 0s and future results |
+| Phase4 future-only epoch 12 | Complete | `[18.20, 14.38, 12.75, 11.23]` | `14.1400` | `12.7867` | `-0.4366` | 0s recovers, but future results still decline |
+| M1R0 formal epoch 12 | Complete | `[18.20, 14.96, 13.18, 11.53]` | `14.4675` | `13.2233` | `0.0000` | Metrics match the baseline |
 
-对应已保留的 IoU 汇总：baseline `[25.68,23.15,22.28,21.21]`；Phase2 `[25.67,23.15,22.27,21.20]`；Phase3 `[25.18,23.01,22.03,20.86]`；Phase4 `[25.68,22.74,21.62,20.47]`；M1R0 `[25.68,23.15,22.28,21.21]`。
+Corresponding retained IoU summaries: baseline `[25.68,23.15,22.28,21.21]`;
+Phase2 `[25.67,23.15,22.27,21.20]`; Phase3 `[25.18,23.01,22.03,20.86]`;
+Phase4 `[25.68,22.74,21.62,20.47]`; M1R0 `[25.68,23.15,22.28,21.21]`.
 
-## 2×2 消融与 smoke 记录
+## 2×2 ablation and smoke records
 
-| 变体 | 参数量 | Memory reads / fused queries | 关键信号 | 当前结论 |
+| Variant | Parameter count | Memory reads / fused queries | Key signals | Current conclusion |
 | --- | ---: | ---: | --- | --- |
-| M0R1：refiner-only | `801,568` | `0 / 0`，empty forward `1.0` | refiner 有梯度 | 可训练，但不验证 Memory |
-| M1R0：Memory-only | `924,188` | `6 / 320`，empty forward `0.0` | q/k/v 梯度极弱；direct residual 约 `1e-5` | Memory 读取正常，但输出影响太弱 |
-| M1R1：Memory + refiner | `1,725,756` | `6 / 320`，empty forward `0.0` | refiner 和 Memory 都有梯度；motion residual 约 `1.23 -> 5.51` | 连通，但存在 motion residual 稳定性风险 |
+| M0R1: refiner-only | `801,568` | `0 / 0`, empty forward `1.0` | The refiner has gradients | Trainable, but does not validate Memory |
+| M1R0: Memory-only | `924,188` | `6 / 320`, empty forward `0.0` | Extremely weak q/k/v gradients; direct residual approximately `1e-5` | Memory reads work, but their effect on outputs is too weak |
+| M1R1: Memory + refiner | `1,725,756` | `6 / 320`, empty forward `0.0` | Both refiner and Memory have gradients; motion residual approximately `1.23 -> 5.51` | Connected, but motion-residual stability is a concern |
 
-M1R1 只能证明训练图接通，不能作为性能收益证据。
+M1R1 only establishes that the training graph is connected; it is not evidence of a performance gain.
 
-## Baseline vs M1R0 中间层差异
+## Intermediate differences: Baseline vs M1R0
 
-比较对象：epoch-56 baseline 与 M1R0 formal epoch-12。覆盖 nuScenes val 4,219 samples。
+Comparison: epoch-56 baseline vs M1R0 formal epoch-12, covering 4,219 nuScenes val samples.
 
-raw logits、raw refine points 与 0s 输出完全一致：
+Raw logits, raw refine points, and 0s outputs are exactly identical:
 
-| 项 | mean abs diff | max abs diff |
+| Item | mean abs diff | max abs diff |
 | --- | ---: | ---: |
 | raw logits | `0` | `0` |
 | raw refine points | `0` | `0` |
 
-future refined 连续张量有变化：
+Future refined continuous tensors change:
 
-| 输出 | 1s | 2s | 3s | 4s | 5s | 6s |
+| Output | 1s | 2s | 3s | 4s | 5s | 6s |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | logits mean abs | `0.006176` | `0.011827` | `0.016842` | `0.020320` | `0.022441` | `0.023618` |
 | points mean abs | `0.0000637` | `0.0001279` | `0.0001760` | `0.0002313` | `0.0002737` | `0.0003166` |
 
-离散 occupancy label 改变比例很低：
+The fraction of discrete occupancy labels that change is very low:
 
 | horizon | changed voxels | changed fraction | baseline non-empty/sample | M1R0 non-empty/sample |
 | --- | ---: | ---: | ---: | ---: |
@@ -81,19 +89,25 @@ future refined 连续张量有变化：
 | 5s | `4,523,406` | `0.1675%` | `53,595.03` | `53,574.93` |
 | 6s | `6,036,067` | `0.2235%` | `53,119.84` | `53,094.71` |
 
-直接结论：M1R0 不是“没训练”或“没读取 Memory”，而是 Memory 造成的连续变化大多没有跨过 occupancy 离散决策边界。
+Direct conclusion: M1R0 was trained and did read Memory,
+but most continuous changes caused by Memory did not cross the discrete occupancy decision boundaries.
 
-## Phase2/3/4 汇总
+## Phase2/3/4 summary
 
-Phase2 的目标是扩大可训练边界，解冻 `pts_bbox_head` 相关 future/head 参数。结果显示 epoch 12 future mean 低于 baseline，继续扩大该方向的收益依据不足。
+Phase2 aimed to expand the trainable scope by unfreezing future/head parameters associated with `pts_bbox_head`.
+Its epoch 12 future mean was below the baseline, providing insufficient evidence to further expand this direction.
 
-Phase3 把 Memory-conditioned refiner 接到 0s 和 future。它证明了训练图连通，但正式评估中 0s 大幅下降，说明当前帧输出路径不应被旧 refiner 扰动。
+Phase3 connected the Memory-conditioned refiner to both 0s and future outputs.
+It established training-graph connectivity, but 0s declined sharply in formal evaluation,
+indicating that the old refiner should not perturb the current-frame output path.
 
-Phase4 改成 future-only 后 0s 恢复 baseline，但 1s/2s/3s 仍低于 baseline。该结果把问题定位到旧 future Memory/refiner 拓扑本身，而不是 0s 路由。
+Phase4 changed the refiner to future-only, restoring 0s to the baseline while leaving 1s/2s/3s below it.
+This result locates the problem in the old future Memory/refiner topology itself rather than the 0s routing.
 
-## Future Memory Adapter 状态
+## Future Memory Adapter status
 
-Future Memory Adapter 是当前新的建模方向。核心差异是分离 Baseline state stream 与 Memory output correction stream：
+Future Memory Adapter is the current new modeling direction.
+Its key difference is the separation of the Baseline state stream from the Memory output correction stream:
 
 ```text
 S_base(t) = ClsBranch(Q_base(t))
@@ -101,42 +115,54 @@ S_final(t) = S_base(t) + G(t) * DeltaS_memory(t) + G(t) * DeltaO_memory(t)
 P_final(t) = SafeRefine(P_base(t), G(t) * DeltaP_memory(t))
 ```
 
-Memory 修正不会写回下一时刻的 Baseline future recurrence。只修正评估目标 1s、2s、3s。
+Memory corrections are not written back into the next time step's Baseline future recurrence.
+Only the evaluation targets 1s, 2s, and 3s are corrected.
 
-内部 step 映射：
+Internal-step mapping:
 
-| 目标 horizon | internal future step | simple_test key | active queries |
+| Target horizon | internal future step | simple_test key | active queries |
 | ---: | ---: | --- | ---: |
 | 1s | 2 | `semantic_occ_2s` | `840` |
 | 2s | 4 | `semantic_occ_4s` | `960` |
 | 3s | 6 | `semantic_occ_6s` | `1040` |
 
-200-iteration smoke 已完成，日志中出现 `mem_1s.*`、`mem_2s.*`、`mem_3s.*` loss，`grad_norm` 非零。smoke 只验证训练接线，不代表性能。
+The 200-iteration smoke run is complete. Logs contain `mem_1s.*`, `mem_2s.*`, and `mem_3s.*` losses,
+and `grad_norm` is nonzero. The smoke run verifies training connectivity only, not performance.
 
-12-epoch formal 当前运行中：
+The 12-epoch formal run is currently in progress:
 
 ```text
 work_dirs/sparseworld-traj-memory-future-adapter-formal-batch4fix/
 ```
 
-当前已观察到 epoch 1 正常推进，`mem_1s/mem_2s/mem_3s` loss 和 `grad_norm` 持续输出；尚未完成训练，也尚未执行正式 validation。
+Epoch 1 has been observed progressing normally, with continuing `mem_1s/mem_2s/mem_3s` loss and `grad_norm` output.
+Training is not yet complete, and formal validation has not yet been performed.
 
-## 仍需关注的问题
+## Outstanding questions
 
-已解决的工程错误不再在本报告展开。当前仍需关注的问题只保留会影响后续实验判断的部分：
+Resolved engineering errors are not discussed further in this report.
+Only issues affecting interpretation of subsequent experiments are retained:
 
-1. Memory 对连续 logits/points 的扰动幅度可能仍不足以改变 occupancy 离散标签，后续需要对 margin、voxel decision boundary 和 corrected logits 分布做诊断。
-2. cache/query 的语义匹配、空间匹配、age/reliability 权重是否真的提供正向预测信息，还需要 Future Adapter formal + shuffled/cache-off 对照来验证。
-3. 旧 Phase3/Phase4 refiner 拓扑不应继续作为主线使用；M1R1 的 motion residual 增长说明该路径仍有稳定性风险。
-4. Future Adapter formal 完成后，必须按相同 checkpoint 进行 Memory ON、Memory OFF、shuffled Memory 对照，才能判断 Memory 是否提供有效增益。
-5. 标准 formal train log 主要记录 loss，不足以解释 flat metrics；若正式评估无提升，需要补充 per-horizon gate、candidate score、semantic compatibility 和 voxel label change diagnostics。
+1. Memory perturbations of continuous logits/points may still be too small to change discrete occupancy labels.
+   Further diagnostics should examine margins, voxel decision boundaries, and corrected-logit distributions.
+2. Whether cache/query semantic matching, spatial matching, and age/reliability weights provide useful predictive
+   information still requires Future Adapter formal results plus shuffled/cache-off controls.
+3. The old Phase3/Phase4 refiner topology should no longer serve as the main approach;
+   the growth of M1R1 motion residuals indicates a continuing stability risk in this path.
+4. After Future Adapter formal training completes, compare Memory ON, Memory OFF, and shuffled Memory
+   using the same checkpoint to determine whether Memory provides a useful gain.
+5. Standard formal training logs primarily record losses and cannot adequately explain flat metrics.
+   If formal evaluation shows no improvement, add per-horizon gate, candidate-score,
+   semantic-compatibility, and voxel-label-change diagnostics.
 
-## 保留与删除策略
+## Retention and deletion policy
 
-本文件是唯一实验数据汇总入口。旧 handoff、阶段性交接、`logs/` 下的软链接/摘要文件会删除，避免同一结果在多个入口重复维护。
+This file is the sole entry point for experimental data summaries.
+Old handoffs, interim handovers, and symlink/summary files under `logs/` will be removed
+to avoid maintaining the same results in multiple places.
 
-原始产物不删除：
+Raw artifacts are not deleted:
 
-- checkpoints、完整训练日志、TensorBoard 文件仍保留在 `work_dirs/`；
-- fixed memory cache 仍保留在 `data/query_memory/`；
-- 正在运行的 Future Adapter formal 目录不清理、不移动、不重命名。
+- Checkpoints, full training logs, and TensorBoard files remain in `work_dirs/`.
+- The fixed memory cache remains in `data/query_memory/`.
+- The running Future Adapter formal directory must not be cleaned, moved, or renamed.

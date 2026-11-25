@@ -1,37 +1,37 @@
-# T0/T1：仅 3s 占据正样本 BCE 类别平衡
+# T0/T1: class balancing only for 3s occupancy-positive BCE
 
-## 起点与证据（2026-10-18）
+## Starting point and evidence (2026-10-18)
 
-起点是 **A+B + SoftVoxel-center epoch 2 的原生推理 checkpoint**：
+The starting point is the **A+B + SoftVoxel-center epoch 2 checkpoint with native inference**:
 
 `work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-from-ab1/epoch_2.pth`
 
-已有 4219 帧正式成绩为 IoU `[25.68,23.85,22.84,21.68]`、mIoU
-`[18.20,15.28,13.21,11.39]`，Future Mean **22.7900 / 13.2933**。
-这些不是本轮 T1 成绩，不关闭任何时刻的位置修正。
+Existing official results on 4219 frames are IoU `[25.68,23.85,22.84,21.68]` and mIoU
+`[18.20,15.28,13.21,11.39]`, with Future Mean **22.7900 / 13.2933**.
+These are not this round's T1 results; position corrections remain enabled at every horizon.
 
-用户运行的 D0 256 帧、150 场景配对诊断位于
-`work_dirs/diagnostics-center-occ-20261018-074738/summary.json`。
-只恢复 Baseline occupancy、保留当前语义和位置时：
+The user-run D0 paired diagnosis on 256 frames from 150 scenes is located at
+`work_dirs/diagnostics-center-occ-20261018-074738/summary.json`.
+When only Baseline occupancy is restored while current semantics and position are retained:
 
-| 时刻 | 二值 IoU 差值（百分点） | mIoU 差值 | mIoU 差值的场景 bootstrap 95% CI |
+| Horizon | Binary IoU difference (percentage points) | mIoU difference | Scene-bootstrap 95% CI for the mIoU difference |
 | --- | ---: | ---: | --- |
 | 1s | -0.6288 | -0.2524 | [-0.4218,-0.0789] |
 | 2s | -0.4870 | +0.0616 | [-0.1242,+0.2637] |
 | 3s | -0.3202 | +0.1947 | [-0.0145,+0.4220] |
 
-3s 的 pedestrian/manmade/vegetation 分别 +2.0268/+1.0605/+1.3963，
-driveable_surface -1.0283。恢复语义使 Future mIoU -0.3533；恢复位置的
-Future mIoU -0.0041，且 3s -0.0639。故保留语义、占据、位置、A+B gates，
-只试验 3s 监督的类别聚合。D0 支持“类别间取舍”的假设，**并未证明训练正样本
-类别不平衡是唯一原因**；3s 整体 mIoU 干预区间仍跨零。它不是完整 validation，
-也不刻画不同训练种子的波动。
+At 3s, pedestrian/manmade/vegetation change by +2.0268/+1.0605/+1.3963, respectively, and
+driveable_surface by -1.0283. Restoring semantics changes Future mIoU by -0.3533; restoring position changes
+Future mIoU by -0.0041, with -0.0639 at 3s. Therefore, retain semantics, occupancy, position, and A+B gates,
+and experiment only with class aggregation of 3s supervision. D0 supports the "tradeoffs between classes" hypothesis, but **does not prove that training-positive
+class imbalance is the sole cause**; the overall 3s mIoU intervention interval still crosses zero. This is not full validation,
+nor does it characterize variation across training seeds.
 
-## 唯一损失改动
+## The only loss change
 
-原有正负平衡 BCE 已分别计算正点均值和负点均值；本轮不改变正负标签规则。
-令 P 为当前 rank/local batch 中所有有效正点，P_c 为其中 GT target label=c
-的点集合，C_present 为 P 中实际出现的类别集合：
+The existing positive/negative-balanced BCE already calculates separate means for positive and negative points; this round leaves positive/negative label rules unchanged.
+Let P be all valid positive points in the current rank/local batch, P_c the subset whose GT target label=c,
+and C_present the set of classes actually present in P:
 
 ```
 L_pos_point = mean_{i in P} BCE(O_i, 1)
@@ -41,103 +41,103 @@ L_occ      = (w_pos * I_pos * L_pos_mix + w_neg * I_neg * L_neg)
              / max(w_pos * I_pos + w_neg * I_neg, EPS)
 ```
 
-配置：`occupancy_positive_class_balance_beta={'1s':0., '2s':0., '3s':0.25}`。
-0.25 是保守的首轮混合比例：保留 75% 原逐点目标，只让 25% 正样本项对每个
-实际出现的 GT 类别等权。全部 17 个非空类别都可参与；没有特定小类名单、
-没有使用预测类别或修改已有 semantic class weights，缺席类别不计入分母。
-类别不平衡被减弱而非消除；稀有类若标签噪声更大，也可能被放大，需实测。
+Configuration: `occupancy_positive_class_balance_beta={'1s':0., '2s':0., '3s':0.25}`.
+0.25 is a conservative first-round mixing ratio: retain 75% of the original point-wise objective, with only 25% of the positive term equally weighting each
+GT class actually present. All 17 non-free classes can participate; there is no specific small-class list,
+no use of predicted classes, and no modification of existing semantic class weights; absent classes are excluded from the denominator.
+Class imbalance is reduced rather than eliminated; if rare classes contain more label noise, that noise may also be amplified and must be measured.
 
-正样本仍为“落在 GT 非空体素”或“最近非空中心在原 radius 内”；前者的
-GT 类别优先，后者使用原 nearest-label。points mask、越界过滤完全沿用。
-负样本项、正负组权重、外层 `loss_occ_weight=0.25`、threshold、anchor、
-semantic、SoftVoxel-center、原 future classification/position losses **不变**。
-T1 仅替换 `mem_3s.loss_occ` 内部正样本均值，保留全部 loss 名称。
+Positives remain points that "fall inside a non-free GT voxel" or whose "nearest non-free center is within the original radius"; the former's
+GT class takes priority, and the latter uses the original nearest-label. The points mask and out-of-bounds filtering are fully retained.
+The negative term, positive/negative group weights, outer `loss_occ_weight=0.25`, threshold, anchor,
+semantics, SoftVoxel-center, and original future classification/position losses are **unchanged**.
+T1 replaces only the internal positive-sample mean in `mem_3s.loss_occ`, retaining all loss names.
 
-空正样本时只剩原负样本项；空负样本时只剩正样本项；全空时返回有限的零。
-新路径按 FP32 累加，避免 FP16 大样本数量/求和溢出（显式 double 输入保留
-double）。beta=0 且不要求新统计时严格走原 reducer，保持原运算顺序与 dtype。
-只新增 C 维 scatter/bincount 和点级向量，不生成 dense points×classes 张量。
+With no positive samples, only the original negative term remains; with no negative samples, only the positive term remains; all-empty input returns a finite zero.
+The new path accumulates in FP32 to avoid FP16 overflow in large sample counts/sums (explicit double inputs retain
+double). When beta=0 and new statistics are not requested, execution strictly follows the original reducer, preserving operation order and dtype.
+Only C-dimensional scatter/bincount and point-level vectors are added; no dense points×classes tensor is generated.
 
-DDP 与原 loss 一样采用 **每 rank 的 local batch 聚合，再平均 rank loss**，
-不是全局 batch 每类计数归一化。固定相同 GPU 数、samples_per_gpu、seed 和
-采样顺序，避免实验间改变这个含义。beta 只作用 3s，但共享参数仍可能影响
-1s/2s 的后续推理，不能承诺这两个时刻训练后逐位不变。
+As in the original loss, DDP uses **local-batch aggregation per rank followed by averaging rank losses**,
+not per-class count normalization over the global batch. Keep GPU count, samples_per_gpu, seed, and
+sampling order fixed so that this meaning does not change between experiments. Beta acts only at 3s, but shared parameters can still affect
+subsequent 1s/2s inference; bitwise equality at those two horizons after training cannot be promised.
 
-## 诊断日志
+## Diagnostic logs
 
-T1 默认 `occupancy_class_balance_diagnostics=True`，且仅 beta>0 的 3s 记录：
+T1 defaults to `occupancy_class_balance_diagnostics=True`, and records only 3s, where beta>0:
 
 - `mem_3s.occ_positive_bce_point_mean / class_mean / mixed_mean`
 - `mem_3s.occ_negative_bce_mean`
 - `mem_3s.occ_class_balance_beta / occ_positive_present_classes`
 - `mem_3s.occ_positive_count / occ_negative_count`
 - `mem_3s.occ_positive_voxel_count / occ_positive_proximity_only_count`
-- 各类别 `occ_positive_count_c0` 至 `c16`，以及对应 `voxel_count_c*`、
-  `proximity_only_count_c*`。实现从 logits 类别数推导，不硬编码 17。
+- Per-class `occ_positive_count_c0` through `c16`, with corresponding `voxel_count_c*` and
+  `proximity_only_count_c*`. The implementation derives the class count from logits rather than hard-coding 17.
 
-这些是被当前预测点匹配到的 GT 类别计数，**不是 GT 体素体积**。
-exact 与 proximity-only 互斥，逐类满足二者之和等于 positive_count；不能直接
-把可能重叠的 voxel_positive 和 proximity_positive 两个原 mask 相加。
-统计 tensor 全部 detach，没有 `loss` 字样，因此不进入优化目标。
-空类别、空正样本也保留相同 scalar keys，避免 DDP rank 的日志 collective
-数量不同。MMDetection 对日志做 rank 平均，logger 又按窗口平均，因此打印的
-count 允许为小数，表示平均每 rank 每迭代数量，不是全局总数。
+These count GT classes matched by current predicted points, **not GT voxel volume**.
+Exact and proximity-only matches are mutually exclusive, and their per-class sum equals positive_count; the original,
+potentially overlapping voxel_positive and proximity_positive masks cannot simply be added.
+All statistic tensors are detached and contain no `loss` substring, so they do not enter the optimization objective.
+Absent classes and empty positive sets retain the same scalar keys, avoiding different numbers of logging collectives
+across DDP ranks. MMDetection averages logs across ranks, and the logger then averages over windows, so printed
+counts may be fractional: they represent mean counts per rank per iteration, not global totals.
 
-## 匹配续训及运行命令
+## Matched continuation training and commands
 
-两组均从 **center epoch 2** 连同 optimizer/runner 状态恢复，各追加一个 epoch
-到 **epoch 3**；不是从 T0 训练后的 epoch 3 接着训练 T1。
+Both groups resume from **center epoch 2**, including optimizer/runner state, and each adds one epoch
+to reach **epoch 3**; T1 does not continue from T0's trained epoch 3.
 
-| 项目 | T0 | T1 |
+| Item | T0 | T1 |
 | --- | --- | --- |
-| 模型 / 推理 | 原 center | 完全相同 |
-| 起点 | center-from-ab1/epoch_2.pth | 同一个 checkpoint |
-| trainable | 原 `future_memory_adapter_v2.*` | 不增删参数 |
-| 3s 正 BCE | 原逐点均值 | 75%逐点 + 25%逐类 |
-| seed / DDP / batch | 17 / 2 GPU / 每卡1 | 相同 |
-| LR / scheduler | 恢复原 AdamW，fixed 2e-5 | 相同 |
-| q chunk / AMP | 48 / dynamic FP16 | 相同 |
-| 总 runner epoch | 3（只新增1） | 3（只新增1） |
+| Model / inference | Original center | Identical |
+| Starting point | center-from-ab1/epoch_2.pth | Same checkpoint |
+| trainable | Original `future_memory_adapter_v2.*` | No parameters added or removed |
+| 3s positive BCE | Original point-wise mean | 75% point-wise + 25% class-wise |
+| seed / DDP / batch | 17 / 2 GPU / 1 per card | Same |
+| LR / scheduler | Restore original AdamW, fixed 2e-5 | Same |
+| q chunk / AMP | 48 / dynamic FP16 | Same |
+| Total runner epochs | 3 (only 1 added) | 3 (only 1 added) |
 
-T0 已由用户手工启动在
-`work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-t0-from-center2`。
-T0 使用原 center 配置，CLI 覆盖 max_epochs=3、独立 work-dir，且**必须显式**
-`--resume-from .../epoch_2.pth`；本项目 tools/train.py 的 CLI 默认值可能覆盖
-配置中的 resume_from，不能只设置配置路径。原配置文件未修改。
+The user has manually launched T0 in
+`work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-t0-from-center2`.
+T0 uses the original center configuration with CLI overrides max_epochs=3 and a separate work-dir, and **must explicitly specify**
+`--resume-from .../epoch_2.pth`; CLI defaults in this project's tools/train.py may override
+resume_from in the configuration, so setting only the configuration path is insufficient. The original configuration file is unchanged.
 
-T1 手工执行前检查（CPU，不启动训练）：
+Manual T1 pre-run check (CPU, without starting training):
 
 ```bash
 bash /data/jxy/projects/tools/run_train_future_memory_occ_t1.sh --check
 ```
 
-等 T0 完成、两张 GPU 空闲后，在 tmux 执行：
+After T0 completes and both GPUs are idle, run in tmux:
 
 ```bash
 bash /data/jxy/projects/tools/run_train_future_memory_occ_t1.sh
 ```
 
-脚本检查 epoch2/optimizer/匹配配置、拒绝已有输出目录、拒绝忙碌 GPU，使用
-与 T0 相同的环境与 seed、独立 port 29555，显式 resume 同一个 epoch2。
-记录 checkpoint/source SHA256 与配置，不记录环境变量/密钥，不修改旧 checkpoint。
-输出为 `work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-t1-from-center2/epoch_3.pth`。
-不创建自动启动或等待 GPU 空闲后自动运行的任务。
+The script checks epoch2/optimizer/matching configuration, rejects existing output directories and busy GPUs, uses
+the same environment and seed as T0, uses separate port 29555, and explicitly resumes the same epoch2.
+It records checkpoint/source SHA256 and configuration, without recording environment variables/secrets or modifying old checkpoints.
+Output is `work_dirs/sparseworld-traj-memory-future-adapter-v2-ab-softvoxel-center-t1-from-center2/epoch_3.pth`.
+No automatic-launch task or task that automatically runs once GPUs become idle is created.
 
-## 验收与后续判断
+## Acceptance checks and subsequent decisions
 
-本轮只做 CPU 静态、配置/独立 Adapter 构建和前向/纯函数验收；不由助手启动训练、
-backward、optimizer step、GPU smoke 或完整评估。测试覆盖 beta=0 恒等、
-精确混合公式、缺席类/空样本、有效点 mask、FP16 累加、B=1/2、其他损失
-严格不变、真实 horizon 接线、日志不参与 loss、配置与 checkpoint key 兼容。
-这不是 T1 梯度验收或训练/指标提升结论。现有 T0 训练由用户启动，保持不动。
+This round performs only CPU static checks, configuration/standalone Adapter construction, and forward/pure-function acceptance; the assistant does not launch training,
+backward, optimizer steps, a GPU smoke test, or full evaluation. Tests cover beta=0 identity,
+the exact mixing formula, absent classes/empty samples, valid-point masks, FP16 accumulation, B=1/2, strict preservation of other
+losses, actual horizon wiring, exclusion of logs from the loss, and configuration/checkpoint-key compatibility.
+This is not T1 gradient acceptance or a conclusion about training/metric improvements. Existing T0 training was launched by the user and is left untouched.
 
-完整模型的 CPU 构建尝试**未完成**：旧 `opus_head.py:85` 在初始化中直接调用
-`torch.tensor(...).cuda()`，隐藏 GPU 的检查环境报 `No CUDA GPUs are available`。
-不改 Baseline、不占用 T0 的 GPU 绕过；完整 T1 model build/GPU smoke/DDP 启动
-验收留到 GPU 空闲后。`--check` 仅验证 CPU Adapter 严格载入和优化器 state
-分组/形状恢复，不把这称为完整模型通过。
+The CPU construction attempt for the full model **did not complete**: the old `opus_head.py:85` directly calls
+`torch.tensor(...).cuda()` during initialization, causing `No CUDA GPUs are available` in the check environment with GPUs hidden.
+Baseline is not modified, and T0's GPUs are not used to bypass this; full T1 model build/GPU smoke/DDP startup
+acceptance is deferred until GPUs are idle. `--check` verifies only strict CPU Adapter loading and restoration of optimizer state
+groups/shapes; it is not described as a passing full-model check.
 
-本轮已实际执行：
+Commands actually executed in this round:
 
 ```bash
 env CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
@@ -153,23 +153,23 @@ env/bin/python -m pytest -q \
   -k 'not cuda'
 ```
 
-最终结果 **94 passed, 1 deselected**；AB/SoftVoxel 文件中的梯度测试均未选择。
-初次测试发现旧 CPU Half reducer 不支持 `clamp_min`，因此 legacy 严格相等
-仅以支持的 FP32/FP64 检查；新 reducer 的 80,000 点 FP16 输入升 FP32 检查
-已通过。这不是 CUDA AMP 运行验收。另修正了测试调用 `_parse_losses` 时遗漏
-实例参数的问题，随后真实 MMDetection parser 已验证新统计不计入总 loss。
+Final result: **94 passed, 1 deselected**; gradient tests in the AB/SoftVoxel files were not selected.
+The initial test found that the old CPU Half reducer does not support `clamp_min`, so strict legacy equality
+was checked only with supported FP32/FP64; the new reducer passed the check promoting 80,000-point FP16 input to FP32.
+This is not CUDA AMP runtime acceptance. A missing instance argument in the test call to `_parse_losses`
+was also corrected, after which the actual MMDetection parser verified that new statistics do not enter the total loss.
 
-`bash -n`、启动脚本 `--check`、Python compile、`git diff --check` 均通过。
-另把 HEAD 中原 loss 函数加载为只读对照，对 B=1/B=2 的正常、空 GT、越界、
-全 mask、空预测共 10 种输入检查：所有默认 loss 均 `torch.equal`。
-V1/V2 Adapter 类、解码、位置、occupancy target 与 SoftVoxel 函数 AST
-和 HEAD 完全一致；来源 epoch2 SHA256 与 D0 provenance 一致。
-HEAD 保持 `3c057d61ab2c7d8ea68ceb4ddd319d9bf7e1bf73`，未提交、推送或改动
-已有 checkpoint/cache；用户原有 diagnostic launcher 与位置复查文档改动保留。
+`bash -n`, the launch script's `--check`, Python compilation, and `git diff --check` all passed.
+The original loss function from HEAD was also loaded as a read-only control and checked on 10 inputs in total:
+normal, empty GT, out-of-bounds, fully masked, and empty predictions for B=1/B=2. All default losses were `torch.equal`.
+ASTs for the V1/V2 Adapter classes, decoding, position, occupancy target, and SoftVoxel functions
+are identical to HEAD; the source epoch2 SHA256 matches D0 provenance.
+HEAD remains `3c057d61ab2c7d8ea68ceb4ddd319d9bf7e1bf73`; there were no commits, pushes, or changes to
+existing checkpoints/cache; the user's pre-existing diagnostic-launcher and position-recheck-document changes were preserved.
 
-后续首先比较 **T1 epoch3 与 T0 epoch3**，并保留 center epoch2 作起点参照。
-目标是改善 3s 及 Future mIoU，同时保留占据 IoU 增益；可把 Future IoU
-相对起点下降不超过 0.05 个百分点当预先约定的探索预算（22.7400），不是
-显著性界限或允许忽略 T0 的标准。检查逐时刻、逐类 TP/FP/FN，尤其行人、
-植被、人造物与道路的取舍。1 epoch 仅作筛选，不自动追加 epoch 或组合 C。
-正式结论仍需匹配的完整验证；碰撞率/L2 要对最终选中 checkpoint 单独评估。
+Next, first compare **T1 epoch3 against T0 epoch3**, retaining center epoch2 as a starting-point reference.
+The objective is to improve 3s and Future mIoU while retaining occupied IoU gains; a Future IoU
+decline of no more than 0.05 percentage points from the starting point can serve as a pre-agreed exploration budget (22.7400), not a
+significance boundary or permission to ignore T0. Inspect per-horizon, per-class TP/FP/FN, especially tradeoffs involving pedestrians,
+vegetation, manmade objects, and roads. 1 epoch is only a screening run; do not automatically add epochs or combine C.
+Formal conclusions still require matched full validation; collision rate/L2 must be evaluated separately on the finally selected checkpoint.

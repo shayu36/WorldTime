@@ -12,13 +12,13 @@ from mmdet3d.models.sparsedetectors.bbox.utils import decode_points,dist_loss_we
 import torch
 
 colors = torch.tensor([
-    [1.00, 0.00, 0.00],   # 红 Red
-    [1.00, 0.65, 0.00],   # 橙 Orange
-    [1.00, 1.00, 0.00],   # 黄 Yellow
-    [0.00, 0.50, 0.00],   # 绿 Green
-    [0.00, 1.00, 1.00],   # 青 Cyan
-    [0.00, 0.00, 1.00],   # 蓝 Blue
-    [0.50, 0.00, 0.50],   # 紫 Purple
+    [1.00, 0.00, 0.00],   # Red
+    [1.00, 0.65, 0.00],   # Orange
+    [1.00, 1.00, 0.00],   # Yellow
+    [0.00, 0.50, 0.00],   # Green
+    [0.00, 1.00, 1.00],   # Cyan
+    [0.00, 0.00, 1.00],   # Blue
+    [0.50, 0.00, 0.50],   # Purple
 ])
 
 
