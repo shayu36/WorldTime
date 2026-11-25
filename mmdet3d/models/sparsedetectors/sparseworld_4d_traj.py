@@ -582,6 +582,9 @@ class SparseWorld4DTraj(OPUS):
         base_points_list = []
         forecast_semantic_logits_list = []
         forecast_occupancy_logits_list = []
+        # Only the dedicated planning subclass requests frozen evidence for
+        # its trainable fusion. Default V1/T1 paths and state dicts are unchanged.
+        planning_snapshots = [] if getattr(self, 'planning_fusion_only', False) else None
         # A rank can legitimately receive a sample with no valid point-level
         # Memory candidate. In that case the strict Baseline fallback bypasses
         # delta_p entirely, which makes DDP report delta_p_head as unused on
@@ -616,6 +619,11 @@ class SparseWorld4DTraj(OPUS):
 
         def _run_adapter(*adapter_args, **adapter_kwargs):
             if adapter_is_v2 and self.training and v2_activation_checkpoint:
+                if getattr(self, 'planning_joint_training', False):
+                    from .planning_checkpoint import checkpoint_adapter_with_context
+                    return checkpoint_adapter_with_context(
+                        adapter_module, adapter_args,
+                        target_ego2global=adapter_kwargs.get('target_ego2global'))
                 # Return residuals and task gates through checkpointing. Large
                 # audit diagnostics are omitted from the checkpointed pass.
                 # Non-reentrant checkpointing supports frozen tensor inputs
@@ -755,6 +763,11 @@ class SparseWorld4DTraj(OPUS):
                 else:
                     output_pos = self._refine_future_memory_points(
                         base_pos_snapshot, gated_delta.flatten(2, 3))
+                if planning_snapshots is not None:
+                    planning_snapshots.append(self._make_memory_planning_snapshot(
+                        interval, horizon_id, ego_feat, pred_traj, state_feat,
+                        base_pos_snapshot, output_pos, base_cls_snapshot,
+                        sem_logits, occ_logits, result))
                 diag = dict(result.get('diagnostics', {}))
                 diag.update(enabled=True, internal_step=int(interval + 1),
                             horizon_id=int(horizon_id),
@@ -805,7 +818,8 @@ class SparseWorld4DTraj(OPUS):
             base_cls_list.append(base_cls_snapshot)
             base_points_list.append(base_pos_snapshot)
 
-            if self.training:
+            if self.training and (planning_snapshots is None or
+                                  getattr(self, 'planning_joint_training', False)):
                 if 'temporal_trajs' not in kwargs:
                     raise KeyError(
                         'temporal_trajs is required for future trajectory loss')
@@ -837,6 +851,8 @@ class SparseWorld4DTraj(OPUS):
             outputs['forecast_semantic_logits_list'] = forecast_semantic_logits_list
             outputs['forecast_occupancy_logits_list'] = forecast_occupancy_logits_list
             outputs['future_memory_v2_graph_anchor'] = v2_graph_anchor
+        if planning_snapshots is not None:
+            outputs['memory_planning_snapshots'] = planning_snapshots
         return outputs
 
     def _future_memory_v2_losses(
@@ -1694,13 +1710,18 @@ class SparseWorld4DTraj(OPUS):
             # correction stream.  It never enters the legacy STAC/refiner
             # path below, so baseline recurrence remains byte-for-byte in
             # terms of state topology.
-            memory_context = self._query_memory_context(
-                kwargs, img_metas, curr_query_feat.device,
-                curr_query_feat.dtype)
-            if memory_context is None:
-                raise RuntimeError(
-                    'FutureMemoryAdapter requires a cache memory context')
-            memory_valid = memory_context.get('memory_valid')
+            current_only = getattr(self.future_memory_adapter_v2, 'ablation_mode', 'full') == 'current_only_task_time'
+            if current_only:
+                memory_context = None
+                memory_valid = None
+            else:
+                memory_context = self._query_memory_context(
+                    kwargs, img_metas, curr_query_feat.device,
+                    curr_query_feat.dtype)
+                if memory_context is None:
+                    raise RuntimeError(
+                        'FutureMemoryAdapter requires a cache memory context')
+                memory_valid = memory_context.get('memory_valid')
             if isinstance(memory_valid, torch.Tensor) and memory_valid.numel():
                 if memory_valid.ndim >= 3:
                     valid_slots = memory_valid.any(dim=-1).float().sum(dim=-1)

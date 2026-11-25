@@ -43,3 +43,9 @@ logs/
 *.egg-info/
 __pycache__/
 .pytest_cache/
+
+# Published reproduction checkpoints are tracked with Git LFS.
+!artifacts/seed17/epoch_1.pth
+!artifacts/initial_t1/epoch_3.pth
+reproduce_outputs/
+.repro-env/

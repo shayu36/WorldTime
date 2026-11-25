@@ -1,0 +1,9 @@
+{
+  "samples": 4,
+  "trajectory_strict_equal": true,
+  "trajectory_max_abs_difference": 0.0,
+  "all_occupancy_voxels_strict_equal": true,
+  "fresh_environment": true,
+  "checkpoint_sha256": "a09d1d20f2b6049b2d396f4342e416b9c810541745d891e380926866d2404760",
+  "test_scope": "4 native validation frames versus original full seed17 predictions, not a new full validation"
+}

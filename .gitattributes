@@ -1,0 +1,8 @@
+artifacts/seed17/epoch_1.pth filter=lfs diff=lfs merge=lfs -text
+artifacts/initial_t1/epoch_3.pth filter=lfs diff=lfs merge=lfs -text
+artifacts/wheels/*.whl filter=lfs diff=lfs merge=lfs -text
+
+# Preserve the exact original evaluator bytes (CRLF/trailing spaces) for SHA256 parity.
+AD-MLP/deps/stp3/stp3/planning_metrics.py -text whitespace=-blank-at-eol,-blank-at-eof
+AD-MLP/deps/stp3/stp3/utils/tools.py -text whitespace=-blank-at-eol,-blank-at-eof
+AD-MLP/deps/stp3/stp3/utils/geometry.py -text whitespace=-blank-at-eol,-blank-at-eof

@@ -1,0 +1,7 @@
+/data/jxy/WorldTime-open-repro-env-20261125/lib/python3.9/site-packages/mmcv/__init__.py:20: UserWarning: On January 1, 2023, MMCV will release v2.0.0, in which it will remove components related to the training process and add a data transformation module. In addition, it will rename the package names mmcv to mmcv-lite and mmcv-full to mmcv. See https://github.com/open-mmlab/mmcv/blob/master/docs/en/compatibility.md for more details.
+  warnings.warn(
+Detailed results: 0/5; final=False
+Prepared five configurations; no training or inference launched: /data/jxy/WorldTime-open-repro-20261125/reproduce_outputs/protocol_check
+/data/jxy/WorldTime-open-repro-env-20261125/lib/python3.9/site-packages/mmcv/__init__.py:20: UserWarning: On January 1, 2023, MMCV will release v2.0.0, in which it will remove components related to the training process and add a data transformation module. In addition, it will rename the package names mmcv to mmcv-lite and mmcv-full to mmcv. See https://github.com/open-mmlab/mmcv/blob/master/docs/en/compatibility.md for more details.
+  warnings.warn(
+Five-seed source/config/checkpoint check: PASS; no GPU work started

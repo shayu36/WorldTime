@@ -1,0 +1,15 @@
+{
+  "training_base_commit": "c562513beb0ba2f919c62d524f468d58ddb3bf85",
+  "source_files": {
+    "mmdet3d/models/sparsedetectors/sparseworld_4d_traj.py": "488c7b6d946d1389694fba73617483b8d8fd050d3c5030daffa6609fa15d825b",
+    "mmdet3d/models/sparsedetectors/query_memory.py": "6083c16932bef4afeed93e310eeba28652357f8842ba2d946b25ba3666796907",
+    "mmdet3d/models/sparsedetectors/sparseworld_memory_planning.py": "dd679a13a5f4b9f299049d2b4c2065f1328a05b0dfc9040b005a752621577f01",
+    "mmdet3d/models/sparsedetectors/sparseworld_memory_planning_joint.py": "a49e73409956d0d495d6a13a04be769ab375055c8c131c5ec7a78adf64f6142a",
+    "mmdet3d/models/sparsedetectors/memory_planning_fusion.py": "4653ddcfbb9d72be945eff1166be5700a7b2471973de0d0b3be0e581e2e52b14",
+    "mmdet3d/models/sparsedetectors/planning_checkpoint.py": "ce7d30fb8b69e68891a98b56fb8a4ff644a75bce30a4edb4236a5bcdcaae62f0",
+    "mmdet3d/datasets/nuscenes_dataset_occ_trajectory.py": "1d3d0f3708f4cab0ddca5582fd7fe85ad1f71c0dfdeff1ffbd38f8590ab00bd0",
+    "mmdet3d/datasets/pipelines/loading_query_memory.py": "0eaa4ba6a0d5a4aed8fd9db549b2be01208e63d3985b8c0f27f52ac5b6475df9",
+    "AD-MLP/deps/stp3/stp3/planning_metrics.py": "c8ec9308b2883d8d689391d44db28f7ff747a5d133b1bf6f0d7415cf733d3563"
+  },
+  "release_changes": "Packaging, portable entrypoints and dependencies; model/data/evaluator logic unchanged."
+}

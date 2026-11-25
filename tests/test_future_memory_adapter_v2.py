@@ -45,6 +45,67 @@ def _adapter(**kwargs):
         coarse_radius=10., point_radius=10., **kwargs)
 
 
+def test_d5_history_slot_limit_is_read_only_and_preserves_default():
+    torch.manual_seed(17)
+    query = torch.randn(2, 2, 8)
+    points = torch.zeros(2, 2, 2, 3)
+    logits = torch.randn(2, 2, 2, 3)
+    memory = _memory(C=8, classes=3, points=2, count=6, batch=2)
+    for key in ('memory_query_feat', 'memory_points_metric', 'memory_valid',
+                'memory_reliability', 'memory_age',
+                'memory_semantic_distribution', 'memory_label'):
+        memory[key] = memory[key].reshape(
+            2, 3, 2, *memory[key].shape[3:])
+    original_valid = memory['memory_valid'].clone()
+    original_age = memory['memory_age'].clone()
+    adapter = _adapter().eval()
+    limited = copy.deepcopy(adapter).eval()
+    limited.history_slot_limit = 1
+    explicit_all = copy.deepcopy(adapter).eval()
+    explicit_all.history_slot_limit = 3
+
+    with torch.no_grad():
+        full = adapter(query, points, logits, memory, 0)
+        all_slots = explicit_all(query, points, logits, memory, 0)
+        one_slot = limited(query, points, logits, memory, 0)
+        changed = copy.deepcopy(memory)
+        changed['memory_query_feat'][:, 1:] += 1000.
+        changed['memory_points_metric'][:, 1:] += 1000.
+        changed['memory_reliability'][:, 1:] = 0.
+        changed['memory_semantic_distribution'][:, 1:] = torch.rand_like(
+            changed['memory_semantic_distribution'][:, 1:])
+        hidden_change = limited(query, points, logits, changed, 0)
+
+    for key in ('context', 'gate', 'gate_occ', 'gate_pos'):
+        assert torch.equal(full[key], all_slots[key]), key
+        assert torch.equal(one_slot[key], hidden_change[key]), key
+    selected = one_slot['diagnostics']['coarse_indices'][
+        one_slot['diagnostics']['coarse_valid']]
+    assert bool((selected < 2).all())
+    assert torch.equal(memory['memory_valid'], original_valid)
+    assert torch.equal(memory['memory_age'], original_age)
+
+    absent = copy.deepcopy(memory)
+    absent['memory_valid'][:, 0] = False
+    with torch.no_grad():
+        fallback = limited(query, points, logits, absent, 0)
+        still_reading = adapter(query, points, logits, absent, 0)
+    assert not bool(fallback['diagnostics']['has_candidate'].any())
+    assert torch.count_nonzero(fallback['context']) == 0
+    assert torch.count_nonzero(fallback['gate']) == 0
+    assert bool(still_reading['diagnostics']['has_candidate'].any())
+
+
+def test_d5_history_slot_limit_rejects_invalid_request():
+    with pytest.raises(ValueError, match='positive'):
+        _adapter(history_slot_limit=0)
+    adapter = _adapter(history_slot_limit=2)
+    memory = _memory(count=2)
+    with pytest.raises(ValueError, match='exceeds available slots=1'):
+        adapter(torch.randn(1, 1, 8), torch.zeros(1, 1, 2, 3),
+                torch.zeros(1, 1, 2, 3), memory, 0)
+
+
 def _load_sparseworld_method(name, extra_globals):
     """Compile one real class method without importing optional CUDA ops."""
     source = (

@@ -1,0 +1,14 @@
+{
+  "artifacts/seed17/epoch_1.pth": {
+    "sha256": "a09d1d20f2b6049b2d396f4342e416b9c810541745d891e380926866d2404760",
+    "bytes": 328667873
+  },
+  "artifacts/initial_t1/epoch_3.pth": {
+    "sha256": "bad9713741aa31373102e9769513ee52832359388990bfb9b365e9e9da40057c",
+    "bytes": 325954537
+  },
+  "artifacts/wheels/mmcv_full-1.7.0-cp39-cp39-linux_x86_64.whl": {
+    "bytes": 5327536,
+    "sha256": "e065b004fb939fcc8d3ab4010c0ff5c6907644d200bd56617f24d674d4b294a6"
+  }
+}

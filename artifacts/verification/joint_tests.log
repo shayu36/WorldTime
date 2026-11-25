@@ -1,0 +1,48 @@
+................                                                         [100%]
+=============================== warnings summary ===============================
+env/lib/python3.9/site-packages/mmcv/__init__.py:20
+  /data/jxy/WorldTime-planning-joint-5seed-20261124/env/lib/python3.9/site-packages/mmcv/__init__.py:20: UserWarning: On January 1, 2023, MMCV will release v2.0.0, in which it will remove components related to the training process and add a data transformation module. In addition, it will rename the package names mmcv to mmcv-lite and mmcv-full to mmcv. See https://github.com/open-mmlab/mmcv/blob/master/docs/en/compatibility.md for more details.
+    warnings.warn(
+
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+  /data/jxy/WorldTime-planning-joint-5seed-20261124/env/lib/python3.9/site-packages/matplotlib/_fontconfig_pattern.py:64: PyparsingDeprecationWarning: 'oneOf' deprecated - use 'one_of'
+    prop = Group((name + Suppress("=") + comma_separated(value)) | oneOf(_CONSTANTS))
+
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+  /data/jxy/WorldTime-planning-joint-5seed-20261124/env/lib/python3.9/site-packages/matplotlib/_fontconfig_pattern.py:85: PyparsingDeprecationWarning: 'parseString' deprecated - use 'parse_string'
+    parse = parser.parseString(pattern)
+
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+  /data/jxy/WorldTime-planning-joint-5seed-20261124/env/lib/python3.9/site-packages/matplotlib/_fontconfig_pattern.py:89: PyparsingDeprecationWarning: 'resetCache' deprecated - use 'reset_cache'
+    parser.resetCache()
+
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+  /data/jxy/WorldTime-planning-joint-5seed-20261124/env/lib/python3.9/site-packages/matplotlib/_mathtext.py:45: PyparsingDeprecationWarning: 'enablePackrat' deprecated - use 'enable_packrat'
+    ParserElement.enablePackrat()
+
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+  /data/jxy/WorldTime-planning-joint-5seed-20261124/env/lib/python3.9/site-packages/thop/profile.py:12: DeprecationWarning: distutils Version classes are deprecated. Use packaging.version instead.
+    if LooseVersion(torch.__version__) < LooseVersion("1.0.0"):
+
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+  /data/jxy/WorldTime-planning-joint-5seed-20261124/env/lib/python3.9/site-packages/thop/profile.py:68: DeprecationWarning: distutils Version classes are deprecated. Use packaging.version instead.
+    if LooseVersion(torch.__version__) >= LooseVersion("1.1.0"):
+
+tests/test_joint_five_seed_protocol.py::test_joint_build_optimizer_scope_and_rates
+  /data/jxy/WorldTime-planning-joint-5seed-20261124/env/lib/python3.9/site-packages/torch/functional.py:504: UserWarning: torch.meshgrid: in an upcoming release, it will be required to pass the indexing argument. (Triggered internally at ../aten/src/ATen/native/TensorShape.cpp:3483.)
+    return _VF.meshgrid(tensors, **kwargs)  # type: ignore[attr-defined]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+16 passed, 20 warnings in 5.58s
